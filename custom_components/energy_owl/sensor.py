@@ -52,7 +52,10 @@ class OwmCMSensor(SensorEntity):
     def __init__(self, collector: CMDataCollector):
         self.collector = collector
         self._attr_device_info = DeviceInfo(
-            manufacturer="Energy OWL", model="CM160", name="CM160"
+            manufacturer="Energy OWL",
+            model="CM160",
+            name="CM160 #1",
+            identifiers=["CM160 #1", collector.serialdevice],
         )
         port = str.replace(collector.serialdevice, '/', '-')
         self._attr_unique_id = f"CM160-{port}-1"
