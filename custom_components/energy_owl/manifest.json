@@ -1,10 +1,10 @@
 {
   "domain": "energy_owl",
-  "name": "Energy Owl CM160",
-  "version": "0.0.1",
+  "name": "Energy Owl CM160 Serial port integration",
+  "version": "0.0.2",
   "codeowners": ["@PBrunot"],
   "config_flow": true,
-  "documentation": "https://www.home-assistant.io/integrations/energy_owl",
+  "documentation": "https://github.com/PBrunot/energy_owl_hacs",
   "issue_tracker": "https://github.com/PBrunot/energy_owl_hacs/issues",
   "iot_class": "local_polling",
   "loggers": ["owlsensor"],

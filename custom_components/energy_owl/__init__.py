@@ -30,7 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         owl_collector = await hass.async_add_executor_job(
-            get_async_datacollector, port, MODEL
+            get_async_datacollector, port, MODEL, 15
         )
     except SerialException as err:
         _LOGGER.error("Error connecting to OWL controller at %s", port)

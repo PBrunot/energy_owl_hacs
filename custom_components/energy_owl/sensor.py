@@ -48,12 +48,14 @@ class OwmCMSensor(SensorEntity):
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
-
+    
     def __init__(self, collector: CMDataCollector):
         self.collector = collector
         self._attr_device_info = DeviceInfo(
             manufacturer="Energy OWL", model="CM160", name="CM160"
         )
+        port = str.replace(collector.serialdevice, '/', '-')
+        self._attr_unique_id = f"CM160-{port}-1"
 
     def update(self) -> None:
         """Fetch new state data for the sensor.
