@@ -35,10 +35,10 @@ async def async_setup_entry(
 
     sensors = [OwmCMSensor(collector)]
 
-    # Create the sensors.
-    async_add_entities(sensors)
-
     await collector.connect()
+
+    # Create the sensors.
+    async_add_entities(sensors)    
 
 
 class OwmCMSensor(SensorEntity):
@@ -54,6 +54,20 @@ class OwmCMSensor(SensorEntity):
         port = str.replace(collector.serialdevice, '/', '-')
         self._attr_unique_id = f"CM160-{port}-1"
 
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the device info."""
+        return DeviceInfo(
+            identifiers={
+                # Serial numbers are unique identifiers within a specific domain
+                (DOMAIN, self.unique_id)
+            },
+            name=self.name,
+            manufacturer="Energy OWL",
+            model="CM160",
+            model_id=1,
+        )
+
     def update(self) -> None:
         """Fetch new state data for the sensor.
 
@@ -62,6 +76,6 @@ class OwmCMSensor(SensorEntity):
         if self.collector is not None:
             _LOGGER.info("Update called on %s", self)
             if self.collector.serialdevice == "test":
-                self._attr_native_value = random.randint(0, 100) / 10.0
+                self.native_value = random.randint(0, 100) / 10.0
             else:
-                self._attr_native_value = self.collector.get_current()
+                self.native_value = self.collector.get_current()
