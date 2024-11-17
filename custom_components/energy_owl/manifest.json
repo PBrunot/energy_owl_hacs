@@ -1,0 +1,10 @@
+{
+  "domain": "energy_owl",
+  "name": "Energy Owl CM160",
+  "codeowners": ["@PBrunot"],
+  "config_flow": true,
+  "documentation": "https://www.home-assistant.io/integrations/energy_owl",
+  "iot_class": "local_polling",
+  "loggers": ["owlsensor"],
+  "requirements": ["owlsensor==0.3.13"]
+}
