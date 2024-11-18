@@ -1,5 +1,8 @@
 This integration allows to connect an Energy OWL CM160 on a homeassistant instant and retrieve the electrical current measurement from it.
 
+![image](https://github.com/user-attachments/assets/75d97f4f-463f-4380-8232-92ce58faa015)
+
+
 How to install
 ==============
 
@@ -21,3 +24,10 @@ How to use
 * Allow for a few minutes before the sensor with CM160 current is updated.
 
 Reason is the CM160 first historical data, then sends realtime data. Sending the historical data takes a while.
+
+* Look for entity CM160 - Current 
+
+![image](https://github.com/user-attachments/assets/20e1dcac-2248-4dd1-9a46-9dbcfda59633)
+
+* Data is updated every 15s. To convert into instantaneous power in kW, you need to multiply current by the average voltage in your home and divide by 1000.
+* To convert the instantaneous power to energy counter, insert a helper to integrate the instantaneous power into kWh. This counter can then be used normally for the Energy dashboard.
