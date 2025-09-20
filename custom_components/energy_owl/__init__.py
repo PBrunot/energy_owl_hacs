@@ -2,9 +2,6 @@
 
 import logging
 
-from owlsensor import get_async_datacollector
-from serial import SerialException
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
@@ -12,12 +9,13 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     CONF_NOT_FIRST_RUN,
+    COORDINATOR,
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     FIRST_RUN,
-    OWL_OBJECT,
     UNDO_UPDATE_LISTENER,
-    MODEL,
 )
+from .coordinator import OwlDataUpdateCoordinator
 
 PLATFORMS = [Platform.SENSOR]
 
@@ -28,26 +26,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OWL data collector from a config entry."""
     port = entry.data[CONF_PORT]
 
+    # Create the coordinator
+    coordinator = OwlDataUpdateCoordinator(
+        hass,
+        port,
+        update_interval=DEFAULT_SCAN_INTERVAL,
+    )
+
+    # Connect to the device
     try:
-        owl_collector = await hass.async_add_executor_job(
-            get_async_datacollector, port, MODEL, 15
-        )
-    except SerialException as err:
-        _LOGGER.error("Error connecting to OWL controller at %s", port)
+        await coordinator._async_setup()
+    except Exception as err:
+        _LOGGER.error("Error setting up OWL coordinator for port %s: %s", port, err)
         raise ConfigEntryNotReady from err
 
-    # double negative to handle absence of value
+    # Track first run for historical data handling
     first_run = not bool(entry.data.get(CONF_NOT_FIRST_RUN))
 
     if first_run:
         hass.config_entries.async_update_entry(
             entry, data={**entry.data, CONF_NOT_FIRST_RUN: True}
         )
+        _LOGGER.info(
+            "First run detected. Device will send historical data before real-time updates."
+        )
 
     undo_listener = entry.add_update_listener(_update_listener)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        OWL_OBJECT: owl_collector,
+        COORDINATOR: coordinator,
         UNDO_UPDATE_LISTENER: undo_listener,
         FIRST_RUN: first_run,
     }
@@ -63,20 +70,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not unload_ok:
         return False
 
+    # Remove update listener
     hass.data[DOMAIN][entry.entry_id][UNDO_UPDATE_LISTENER]()
 
-    def _cleanup(owl_object) -> None:
-        """Destroy the OWL object.
+    # Disconnect the coordinator
+    coordinator: OwlDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][COORDINATOR]
+    await coordinator.async_disconnect()
 
-        Destroying the OWL closes the serial connection, do it in an executor so the garbage
-        collection does not block.
-        """
-        del owl_object
-
-    owl_object = hass.data[DOMAIN][entry.entry_id][OWL_OBJECT]
+    # Clean up data
     hass.data[DOMAIN].pop(entry.entry_id)
-
-    await hass.async_add_executor_job(_cleanup, owl_object)
 
     return True
 

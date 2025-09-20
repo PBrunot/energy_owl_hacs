@@ -1,4 +1,4 @@
-"""Config flow for Monoprice 6-Zone Amplifier integration."""
+"""Config flow for Energy OWL CM160 integration."""
 
 from __future__ import annotations
 
@@ -30,11 +30,25 @@ async def validate_input(hass: HomeAssistant, data):
     Data has the keys from DATA_SCHEMA with values provided by the user.
     """
     try:
-        await hass.async_add_executor_job(
+        # Test connection by creating a collector instance
+        collector = await hass.async_add_executor_job(
             get_async_datacollector, data[CONF_PORT], MODEL
         )
+        # Quick connection test
+        await collector.connect()
+
+        # Clean up test connection
+        def _cleanup(test_collector) -> None:
+            """Clean up test collector."""
+            del test_collector
+
+        await hass.async_add_executor_job(_cleanup, collector)
+
     except SerialException as err:
-        _LOGGER.error("Error connecting to OWL controller")
+        _LOGGER.error("Error connecting to OWL controller at %s: %s", data[CONF_PORT], err)
+        raise CannotConnect from err
+    except Exception as err:
+        _LOGGER.error("Unexpected error testing OWL connection at %s: %s", data[CONF_PORT], err)
         raise CannotConnect from err
 
     # Return info that you want to store in the config entry.
@@ -55,11 +69,18 @@ class OwlConfigFlow(ConfigFlow, domain=DOMAIN):
             try:
                 info = await validate_input(self.hass, user_input)
 
-                return self.async_create_entry(title=user_input[CONF_PORT], data=info)
+                # Check for existing entries with the same port
+                await self.async_set_unique_id(user_input[CONF_PORT])
+                self._abort_if_unique_id_configured()
+
+                return self.async_create_entry(
+                    title=f"Energy OWL CM160 ({user_input[CONF_PORT]})",
+                    data=info
+                )
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except Exception:
-                _LOGGER.exception("Unexpected exception")
+                _LOGGER.exception("Unexpected exception during config flow")
                 errors["base"] = "unknown"
 
         return self.async_show_form(
@@ -67,16 +88,6 @@ class OwlConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-@callback
-def _key_for_source(index, source, previous_sources):
-    if str(index) in previous_sources:
-        key = vol.Optional(
-            source, description={"suggested_value": previous_sources[str(index)]}
-        )
-    else:
-        key = vol.Optional(source)
-
-    return key
 
 
 class CannotConnect(HomeAssistantError):
