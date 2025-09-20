@@ -63,20 +63,29 @@ class OwlCMSensor(CoordinatorEntity, SensorEntity):
             manufacturer="Energy OWL",
             model="CM160",
             sw_version="1.0",
-            via_device=(DOMAIN, self.config_entry.entry_id),
         )
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.last_update_success and self.coordinator.connected
+        # Entity is available if coordinator is connected and either has valid data or is still syncing
+        return self.coordinator.connected and (
+            self.coordinator.last_update_success or
+            (self.coordinator.data and self.coordinator.data.get("connected", False))
+        )
 
     @property
     def native_value(self) -> float | None:
         """Return the current measurement."""
         if not self.coordinator.data:
             return None
-        return self.coordinator.data.get("current")
+
+        current = self.coordinator.data.get("current")
+        # Return None if still receiving historical data or no valid reading yet
+        if current is None:
+            return None
+
+        return current
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -84,9 +93,16 @@ class OwlCMSensor(CoordinatorEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
 
-        return {
+        attrs = {
             "connected": self.coordinator.data.get("connected", False),
             "last_error": self.coordinator.data.get("last_error"),
             "error_count": self.coordinator.data.get("error_count", 0),
             "total_updates": self.coordinator.data.get("total_updates", 0),
         }
+
+        # Add status hint when current is None but device is connected
+        current = self.coordinator.data.get("current")
+        if current is None and self.coordinator.data.get("connected", False):
+            attrs["status"] = "Receiving historical data or waiting for real-time updates"
+
+        return attrs

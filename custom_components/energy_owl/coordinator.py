@@ -73,6 +73,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             )
             await self._collector.connect()
 
+            # Validate connection by checking if the collector is properly connected
+            if not hasattr(self._collector, '_connected') or not self._collector._connected:
+                raise UpdateFailed(f"Device connection validation failed for {self.port}")
+
             self._connected = True
             self._last_error = None
             _LOGGER.info(
@@ -137,16 +141,20 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
                     # Try to reconnect on serial errors
                     if isinstance(err, SerialException):
+                        _LOGGER.info("Serial error detected, attempting to reconnect to device...")
+                        self._connected = False
                         try:
                             await self._async_connect()
+                            _LOGGER.info("Reconnection successful")
                         except Exception as connect_err:
-                            _LOGGER.debug("Reconnection failed: %s", connect_err)
+                            _LOGGER.warning("Reconnection failed: %s", connect_err)
                 else:
                     # Final attempt failed
                     self._connected = False
                     _LOGGER.error(
-                        "All %d attempts failed to get data from OWL device",
+                        "All %d attempts failed to get data from OWL device at %s. Device may be disconnected.",
                         self.max_retries + 1,
+                        self.port,
                     )
                     raise UpdateFailed(f"Failed to get data after {self.max_retries + 1} attempts: {err}") from err
 
