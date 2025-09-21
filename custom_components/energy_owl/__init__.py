@@ -1,6 +1,8 @@
 """The Energy OWL CM160 energy meter integration."""
 
+import csv
 import logging
+import re
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PORT, Platform
@@ -95,36 +97,61 @@ async def _update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def _register_services(hass: HomeAssistant) -> None:
     """Register services for the integration."""
 
-    def _get_coordinator_from_call(call: ServiceCall) -> OwlDataUpdateCoordinator:
-        """Get the coordinator for a service call from the targeted device."""
+    def _get_coordinator_from_call(
+        call: ServiceCall,
+    ) -> tuple[OwlDataUpdateCoordinator, str | None]:
+        """Get the coordinator and device_id for a service call."""
+        target_device_ids = call.data.get("device_id", [])
+        config_entry_id = None
+        target_device_id = None
+
         device_reg = dr.async_get(hass)
 
-        # In case multiple devices are targeted, we only handle the first one.
-        target_device_id = next(iter(call.data.get("device_id", [])), None)
-        if not target_device_id:
-            raise ValueError("No device_id targeted for service call")
+        if target_device_ids:
+            # A device was explicitly targeted
+            target_device_id = next(iter(target_device_ids))
+            device = device_reg.async_get(target_device_id)
+            if not device:
+                raise ValueError(f"Device {target_device_id} not found in device registry")
 
-        device = device_reg.async_get(target_device_id)
-        if not device:
-            raise ValueError(f"Device {target_device_id} not found in device registry")
+            # Find the config entry associated with this device
+            config_entry_id = next(iter(device.config_entries), None)
 
-        # Find the config entry associated with this device
-        config_entry_id = next(iter(device.config_entries), None)
+        else:
+            # No device targeted, try to infer
+            domain_data = hass.data.get(DOMAIN, {})
+            if len(domain_data) == 1:
+                _LOGGER.debug(
+                    "Service call with no device_id, defaulting to the only available device."
+                )
+                config_entry_id = next(iter(domain_data))
+                # Find the device associated with this config entry
+                devices = dr.async_entries_for_config_entry(
+                    device_reg, config_entry_id
+                )
+                if devices:
+                    target_device_id = devices[0].id
+            elif len(domain_data) > 1:
+                raise ValueError(
+                    "Multiple devices found. Please target a specific device for this service call."
+                )
+
         if not config_entry_id:
             raise ValueError(
-                f"Device {target_device_id} not associated with a config entry"
+                "Could not determine target device. Please select a device for the service call."
             )
 
-        if config_entry_id not in hass.data[DOMAIN]:
+        if config_entry_id not in hass.data.get(DOMAIN, {}):
             raise ValueError(
-                f"Integration for device {target_device_id} not ready or not found"
+                f"Integration for config entry {config_entry_id} not ready or not found"
             )
 
-        return hass.data[DOMAIN][config_entry_id][COORDINATOR]
+        coordinator = hass.data[DOMAIN][config_entry_id][COORDINATOR]
+        return coordinator, target_device_id
 
     async def get_historical_data(call: ServiceCall) -> dict:
         """Service to get historical data from the device."""
-        coordinator = _get_coordinator_from_call(call)
+        coordinator, device_id = _get_coordinator_from_call(call)
         clear_existing = call.data.get("clear_existing", False)
 
         # Clear existing data if requested
@@ -133,27 +160,29 @@ async def _register_services(hass: HomeAssistant) -> None:
                 coordinator._collector.clear_historical_data
             )
             # Reset coordinator state after clearing
-            coordinator._historical_data_complete = False  # pylint: disable=protected-access
-            coordinator._historical_data_count = 0  # pylint: disable=protected-access
-            coordinator._last_historical_check = 0  # pylint: disable=protected-access
+            coordinator._historical_data_complete = False
+            coordinator._historical_data_count = 0
+            coordinator._last_historical_check = 0
 
         # Get current historical data
         historical_data = await coordinator.get_historical_data()
 
         return {
-            "device_id": next(iter(call.data.get("device_id", [])), None),
+            "device_id": device_id,
             "historical_data_count": len(historical_data),
             "historical_data_complete": coordinator.historical_data_complete,
             "records": [
-                {"timestamp": record["timestamp"].isoformat(), "current": record["current"]}
+                {
+                    "timestamp": record["timestamp"].isoformat(),
+                    "current": record["current"],
+                }
                 for record in historical_data
             ],
         }
 
     async def clear_historical_data(call: ServiceCall) -> None:
         """Service to clear historical data from the device."""
-        coordinator = _get_coordinator_from_call(call)
-        device_id = next(iter(call.data.get("device_id", [])), None)
+        coordinator, device_id = _get_coordinator_from_call(call)
 
         # Clear historical data
         if coordinator._collector:
@@ -161,11 +190,52 @@ async def _register_services(hass: HomeAssistant) -> None:
                 coordinator._collector.clear_historical_data
             )
         # Reset coordinator state after clearing
-        coordinator._historical_data_complete = False  # pylint: disable=protected-access
-        coordinator._historical_data_count = 0  # pylint: disable=protected-access
-        coordinator._last_historical_check = 0  # pylint: disable=protected-access
+        coordinator._historical_data_complete = False
+        coordinator._historical_data_count = 0
+        coordinator._last_historical_check = 0
 
         _LOGGER.info("Historical data cleared for device %s", device_id)
+
+    async def export_historical_data_csv(call: ServiceCall) -> None:
+        """Service to export historical data to a CSV file."""
+        coordinator, device_id = _get_coordinator_from_call(call)
+
+        # Default filename if not provided
+        default_filename = f"energy_owl_export_{device_id}.csv"
+        filename = call.data.get("filename", default_filename)
+
+        # Basic sanitization to create a valid filename
+        filename = re.sub(r'[\\/:"*?<>|]', "_", filename)
+        if not filename.lower().endswith(".csv"):
+            filename += ".csv"
+
+        file_path = hass.config.path(filename)
+        historical_data = await coordinator.get_historical_data()
+
+        if not historical_data:
+            _LOGGER.warning("No historical data found to export for device %s.", device_id)
+            return
+
+        def _write_csv_sync():
+            """Write data to CSV file in executor to avoid blocking."""
+            try:
+                with open(file_path, "w", newline="", encoding="utf-8") as csv_file:
+                    writer = csv.writer(csv_file)
+                    writer.writerow(["timestamp", "current"])
+                    for record in historical_data:
+                        writer.writerow(
+                            [record["timestamp"].isoformat(), record["current"]]
+                        )
+                _LOGGER.info(
+                    "Successfully exported %d historical records for device %s to %s",
+                    len(historical_data),
+                    device_id,
+                    file_path,
+                )
+            except IOError as err:
+                _LOGGER.error("Error writing to file %s: %s", file_path, err)
+
+        await hass.async_add_executor_job(_write_csv_sync)
 
     # Register services only once
     if not hass.services.has_service(DOMAIN, "get_historical_data"):
@@ -181,4 +251,11 @@ async def _register_services(hass: HomeAssistant) -> None:
             DOMAIN,
             "clear_historical_data",
             clear_historical_data,
+        )
+
+    if not hass.services.has_service(DOMAIN, "export_historical_data_csv"):
+        hass.services.async_register(
+            DOMAIN,
+            "export_historical_data_csv",
+            export_historical_data_csv,
         )

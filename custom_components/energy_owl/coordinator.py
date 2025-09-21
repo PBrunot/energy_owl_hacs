@@ -357,20 +357,15 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_disconnect(self) -> None:
         """Disconnect from the device."""
         if self._collector:
-            def _cleanup(collector) -> None:
-                """Clean up the collector object."""
-                try:
-                    # Properly close the collector if it has a close method
-                    if hasattr(collector, 'close'):
-                        collector.close()
-                    elif hasattr(collector, 'disconnect'):
-                        collector.disconnect()
-                except Exception as err:
-                    _LOGGER.debug("Error during collector cleanup: %s", err)
-                finally:
-                    del collector
-
-            await self.hass.async_add_executor_job(_cleanup, self._collector)
-            self._collector = None
-            self._connected = False
-            _LOGGER.debug("Disconnected from OWL device")
+            _LOGGER.debug("Disconnecting from OWL device collector...")
+            try:
+                # The collector's disconnect method is async and handles task cleanup
+                await self._collector.disconnect()
+                _LOGGER.info("Successfully disconnected from OWL device.")
+            except Exception as err:
+                _LOGGER.warning(
+                    "Error during collector disconnect: %s", err, exc_info=True
+                )
+            finally:
+                self._collector = None
+                self._connected = False

@@ -29,6 +29,7 @@ async def validate_input(hass: HomeAssistant, data):
 
     Data has the keys from DATA_SCHEMA with values provided by the user.
     """
+    collector = None
     try:
         # Test connection by creating a collector instance
         collector = await hass.async_add_executor_job(
@@ -37,19 +38,16 @@ async def validate_input(hass: HomeAssistant, data):
         # Quick connection test
         await collector.connect()
 
-        # Clean up test connection
-        def _cleanup(test_collector) -> None:
-            """Clean up test collector."""
-            del test_collector
-
-        await hass.async_add_executor_job(_cleanup, collector)
-
     except SerialException as err:
         _LOGGER.error("Error connecting to OWL controller at %s: %s", data[CONF_PORT], err)
         raise CannotConnect from err
     except Exception as err:
         _LOGGER.error("Unexpected error testing OWL connection at %s: %s", data[CONF_PORT], err)
         raise CannotConnect from err
+    finally:
+        # Always ensure the test collector is disconnected to clean up background tasks
+        if collector:
+            await collector.disconnect()
 
     # Return info that you want to store in the config entry.
     return {CONF_PORT: data[CONF_PORT]}
