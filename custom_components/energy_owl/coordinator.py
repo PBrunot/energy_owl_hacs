@@ -58,6 +58,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._max_recovery_attempts = 3
         self._historical_data_pushers: list = []  # Track registered pushers
         self._all_pushers_complete = False
+        self._realtime_listeners: list = []  # Track real-time data listeners
 
         super().__init__(
             hass,
@@ -214,6 +215,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     self.max_retries + 1,
                     "Complete" if self._historical_data_complete else "Syncing"
                 )
+
+                # Broadcast real-time data to listeners if we have a current reading
+                if current is not None:
+                    await self._broadcast_realtime_data(current)
 
                 return {
                      "current": current,
@@ -538,6 +543,35 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.warning("Error getting historical data: %s", err)
             return []
+
+    def register_realtime_listener(self, listener) -> None:
+        """Register a real-time data listener."""
+        if listener not in self._realtime_listeners:
+            self._realtime_listeners.append(listener)
+            _LOGGER.debug("Registered real-time listener. Total listeners: %d", len(self._realtime_listeners))
+
+    def unregister_realtime_listener(self, listener) -> None:
+        """Unregister a real-time data listener."""
+        if listener in self._realtime_listeners:
+            self._realtime_listeners.remove(listener)
+            _LOGGER.debug("Unregistered real-time listener. Total listeners: %d", len(self._realtime_listeners))
+
+    async def _broadcast_realtime_data(self, current: float) -> None:
+        """Broadcast real-time current data to all listeners."""
+        if not self._realtime_listeners:
+            return
+
+        from datetime import datetime
+        from homeassistant.util import dt as dt_util
+
+        timestamp = dt_util.as_local(datetime.now())
+
+        for listener in self._realtime_listeners:
+            try:
+                if hasattr(listener, 'on_realtime_data'):
+                    await listener.on_realtime_data(current, timestamp)
+            except Exception as err:
+                _LOGGER.error("Error broadcasting real-time data to listener: %s", err)
 
     async def async_disconnect(self) -> None:
         """Disconnect from the device."""

@@ -48,10 +48,10 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._chunks_pushed = 0
         self._last_push_time: datetime | None = None
         self._push_task: asyncio.Task | None = None
-        self._chunk_size = 100  # Very small chunk size to reduce memory usage
+        self._chunk_size = 500  # Bigger chunk size for faster processing
         self._processing_complete = False
         self._acquisition_start_time: datetime | None = None
-        self._acquisition_wait_time = 120  # Wait 2 minutes before starting to push
+        self._acquisition_wait_time = 60  # Reduced wait time for faster processing
         self._pending_historical_states: list[HistoricalState] = []
         self._completion_notification_sent = False
         # Use smaller memory footprint for tracking - limit to recent timestamps only
@@ -61,6 +61,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
+        self.coordinator.register_realtime_listener(self)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -296,8 +297,8 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     # Push states immediately after each chunk with smaller batches
                     await self._push_pending_states()
 
-                    # More aggressive delay and memory cleanup
-                    await asyncio.sleep(15)
+                    # Faster processing with reduced delays
+                    await asyncio.sleep(5)
 
                     # Force garbage collection periodically to free memory
                     if self._chunks_pushed % 10 == 0:
@@ -315,10 +316,10 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                         self._processed_count
                     )
                 else:
-                    # No chunk to process, wait longer and do memory cleanup
+                    # No chunk to process, wait shorter and do memory cleanup
                     import gc
                     gc.collect()
-                    await asyncio.sleep(20)
+                    await asyncio.sleep(10)
 
         except Exception as err:
             _LOGGER.error("Error in historical data processing task: %s", err, exc_info=True)
@@ -426,10 +427,35 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             _LOGGER.error("Error pushing %d pending states to HA: %s", len(states_to_push), err)
             # Don't clear pending states on error so we can retry later
 
+    async def on_realtime_data(self, current: float, timestamp: datetime) -> None:
+        """Handle real-time data events from the coordinator."""
+        if not self._processing_complete:
+            # Still processing historical data, don't add real-time data yet
+            return
+
+        try:
+            # Create a HistoricalState for the real-time data
+            historical_state = HistoricalState(
+                state=current,
+                dt=timestamp
+            )
+
+            # Add to pending states for immediate processing
+            self._pending_historical_states.append(historical_state)
+
+            # Push the real-time data immediately to maintain continuous stream
+            await self._push_pending_states()
+
+            _LOGGER.debug("Added real-time data: current=%s, timestamp=%s", current, timestamp)
+
+        except Exception as err:
+            _LOGGER.error("Error handling real-time data: %s", err)
+
     async def async_will_remove_from_hass(self) -> None:
         """Cancel the processing task when entity is removed."""
         # Unregister from coordinator
         self.coordinator.unregister_historical_pusher(self)
+        self.coordinator.unregister_realtime_listener(self)
 
         if self._push_task and not self._push_task.done():
             self._push_task.cancel()
