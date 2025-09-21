@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -49,6 +50,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._historical_data_complete = False
         self._historical_data_count = 0
         self._last_historical_check = 0
+        self._last_new_historical_record_time: float | None = None
 
         super().__init__(
             hass,
@@ -111,12 +113,13 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 self._total_updates += 1
                 current = None
                 debug_info = {}
+                new_historical_records = []
 
                 # Phase 1: Process historical data until the sync is complete.
                 # During this phase, `current` will be None.
                 _LOGGER.debug("Checking historical data status. Complete: %s", self._historical_data_complete)
                 if not self._historical_data_complete:
-                    await self._process_and_consume_historical_data()
+                    new_historical_records = await self._process_and_consume_historical_data()
 
                 # Phase 2: Always attempt to get a real-time reading.
                 # The library should return None if it's not available yet (i.e., during historical sync).
@@ -155,6 +158,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
                 return {
                      "current": current,
+                     "new_historical_records": new_historical_records,
                      "connected": self._connected,
                      "last_error": self._last_error,
                      "error_count": self._error_count,
@@ -203,66 +207,73 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         # This should not be reached if the loop raises UpdateFailed, but as a fallback.
         raise UpdateFailed("Unexpected error in data update loop")
 
-    async def _process_and_consume_historical_data(self) -> None:
-        """Process and consume historical data transparently, transitioning to real-time when complete."""
+    async def _process_and_consume_historical_data(self) -> list:
+        """Process historical data, determine if sync is complete, and return new records."""
         if not self._collector:
-            return
+            return []
+
+        new_records = []
         try:
-            _LOGGER.debug("Processing historical data...")
-            # Get available historical data
+            # 1. Get all available historical data and process any new records
             historical_data = await self.hass.async_add_executor_job(
                 self._collector.get_historical_data
             )
             _LOGGER.debug("get_historical_data returned %d records", len(historical_data))
 
             new_count = len(historical_data)
-            _LOGGER.debug("New historical count: %d, last check count: %d", new_count, self._last_historical_check)
             if new_count > self._last_historical_check:
                 new_records = historical_data[self._last_historical_check:]
                 _LOGGER.debug("Processing %d new historical records", len(new_records))
                 await self._emit_historical_records(new_records)
                 self._last_historical_check = new_count
+                # Reset our own timeout timer since we just got fresh data
+                if self._last_new_historical_record_time is None:
+                    _LOGGER.debug("Started historical data timeout timer.")
+                self._last_new_historical_record_time = time.monotonic()
 
-            # Update total count for the status sensor
             self._historical_data_count = new_count
 
-            # Now, check if the device has finished sending all historical data
-            _LOGGER.debug("Checking if historical data is complete...")
-            complete = await self.hass.async_add_executor_job(
+            # 2. Check for completion using the library's method
+            complete_from_library = await self.hass.async_add_executor_job(
                 self._collector.is_historical_data_complete
             )
-            _LOGGER.debug("is_historical_data_complete returned: %s", complete)
+            if complete_from_library:
+                _LOGGER.debug("Library reports historical data is complete.")
 
-            if complete and not self._historical_data_complete:
+            # 3. Check for completion using our own coordinator-level timeout
+            HISTORICAL_DATA_TIMEOUT = self.update_interval.total_seconds() * 2
+            complete_from_timeout = False
+            if self._last_new_historical_record_time is not None:
+                elapsed = time.monotonic() - self._last_new_historical_record_time
+                if elapsed > HISTORICAL_DATA_TIMEOUT:
+                    _LOGGER.warning(
+                        "No new historical data for over %s seconds. Forcing completion.",
+                        HISTORICAL_DATA_TIMEOUT,
+                    )
+                    complete_from_timeout = True
+            elif self._historical_data_count == 0 and self._total_updates > 1:
+                self._last_new_historical_record_time = time.monotonic()
+
+            if (complete_from_library or complete_from_timeout) and not self._historical_data_complete:
                 _LOGGER.info(
-                    "Historical data collection completed for device at %s. Acknowledging to transition to real-time.",
-                    self.port
+                    "Historical data sync is considered complete. Acknowledging to transition to real-time."
                 )
-                # This call tells the device we have received all historical data
-                # and it can now switch to real-time mode.
                 await self._acknowledge_historical_sync_completion()
-
                 self._historical_data_complete = True
+                self._fire_completion_event()
 
-                # Fire completion event
-                port_safe = self.port.replace('/', '-').replace('\\', '-')
-                self.hass.bus.fire(
-                    f"{DOMAIN}_historical_data_complete",
-                    {
-                        "device_port": self.port,
-                        "device_id": f"CM160-{port_safe}"
-                    }
-                )
+            return new_records
 
         except Exception as err:
             _LOGGER.warning("Error processing historical data: %s", err, exc_info=True)
+            return []
 
     async def _emit_historical_records(self, records: list) -> None:
         """Emit historical records as Home Assistant events."""
         for record in records:
             try:
                 # Fire event for each historical record with proper domain prefix
-                port_safe = self.port.replace('/', '-').replace('\\', '-')
+                port_safe = self.port.replace("/", "-").replace("\\", "-")
                 self.hass.bus.fire(
                     f"{DOMAIN}_historical_data",
                     {
@@ -274,6 +285,15 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             except Exception as err:
                 _LOGGER.warning("Error emitting historical record event: %s", err)
+
+    def _fire_completion_event(self) -> None:
+        """Fire the historical data completion event."""
+        port_safe = self.port.replace("/", "-").replace("\\", "-")
+        self.hass.bus.fire(
+            f"{DOMAIN}_historical_data_complete",
+            {"device_port": self.port, "device_id": f"CM160-{port_safe}"},
+        )
+        _LOGGER.debug("Fired historical data completion event.")
 
     async def _acknowledge_historical_sync_completion(self) -> None:
         """Acknowledge historical data completion to the device to transition to real-time mode."""
