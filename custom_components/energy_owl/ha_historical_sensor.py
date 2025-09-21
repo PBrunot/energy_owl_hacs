@@ -36,6 +36,8 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_should_poll = False  # Ensure no polling conflicts with HistoricalSensor
+    _attr_available = True  # Explicit availability
     # Remove diagnostic category to allow proper state display like the working current sensor
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
@@ -97,7 +99,23 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             return None
 
         # Return the current value from coordinator (real-time data)
-        return self.coordinator.data.get("current")
+        current = self.coordinator.data.get("current")
+        if current is not None:
+            # Ensure we have a valid float value for HA
+            try:
+                return float(current)
+            except (ValueError, TypeError):
+                _LOGGER.warning("Invalid current value received: %s", current)
+                return None
+        return None
+
+    @property
+    def state(self) -> str | None:
+        """Return the state of the sensor - ensure HA recognizes the entity."""
+        native_val = self.native_value
+        if native_val is None:
+            return None
+        return str(native_val)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
