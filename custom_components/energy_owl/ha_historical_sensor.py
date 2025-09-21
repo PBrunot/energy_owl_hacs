@@ -221,7 +221,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                         # Send notification now that we're ready to start processing
                         estimated_chunks = (len(historical_data) + self._chunk_size - 1) // self._chunk_size
                         estimated_batches = (len(historical_data) + 25 - 1) // 25  # Assuming 25 states per batch
-                        estimated_time_hours = (estimated_batches * 13) / 3600  # 10s + 3s = 13s per batch
+                        estimated_time_hours = (estimated_batches * 4) / 3600  # 3s + 1s = 4s per batch
                         
                         self.hass.async_create_task(
                             self.hass.services.async_call(
@@ -320,9 +320,9 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     # Push states immediately after each chunk
                     await self._push_pending_states()
 
-                    # Moderate delay balanced for large dataset imports (40k+ records)
-                    # Conservative enough to prevent errors, fast enough to complete in reasonable time
-                    base_delay = 10  # 10 second base delay between chunks
+                    # Faster delay for large dataset imports - prioritize speed while maintaining safety
+                    # Will scale up automatically if database errors occur
+                    base_delay = 3  # 3 second base delay between chunks
                     adaptive_delay = int(base_delay * self._adaptive_delay_multiplier)
                     
                     if self._adaptive_delay_multiplier > 1.0:
@@ -532,9 +532,9 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             # Remove only the pushed states to save memory
             self._pending_historical_states = self._pending_historical_states[len(states_to_push):]
 
-            # Moderate delay after successful writes - balanced for large imports
-            # Give recorder time to process without making imports take days
-            await asyncio.sleep(3)  # 3 second delay after each batch write
+            # Minimal delay after successful writes - prioritize import speed
+            # Still give recorder a moment to process but keep things moving
+            await asyncio.sleep(1)  # 1 second delay after each batch write
 
         except Exception as err:
             _LOGGER.error("Error pushing %d pending states to HA: %s", len(states_to_push), err)
