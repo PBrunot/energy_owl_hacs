@@ -286,7 +286,7 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
                     await self._push_pending_states()
 
                     # Aggressive delay to avoid overwhelming the database
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(2)
 
                     # Update the entity state to reflect progress
                     self.async_write_ha_state()
@@ -378,7 +378,7 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
                             max_retries,
                             write_err
                         )
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(1)
                     else:
                         raise write_err
 
