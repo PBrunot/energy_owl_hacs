@@ -259,3 +259,22 @@ async def _register_services(hass: HomeAssistant) -> None:
             "export_historical_data_csv",
             export_historical_data_csv,
         )
+
+    async def force_reconnect(call: ServiceCall) -> None:
+        """Service to force reconnection when device is stuck."""
+        coordinator, device_id = _get_coordinator_from_call(call)
+
+        _LOGGER.warning("Force reconnect requested for device %s", device_id)
+
+        # Disconnect and reconnect
+        await coordinator.async_disconnect()
+        await coordinator._async_connect()
+
+        _LOGGER.info("Force reconnection completed for device %s", device_id)
+
+    if not hass.services.has_service(DOMAIN, "force_reconnect"):
+        hass.services.async_register(
+            DOMAIN,
+            "force_reconnect",
+            force_reconnect,
+        )

@@ -127,6 +127,15 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 current = await self.hass.async_add_executor_job(
                     self._collector.get_current
                 )
+
+                # Add detailed logging for real-time mode issues
+                if current is None and self._historical_data_complete:
+                    _LOGGER.warning(
+                        "Historical data complete but still no real-time reading after %d updates. "
+                        "Device may not have transitioned to real-time mode properly.",
+                        self._total_updates
+                    )
+
                 _LOGGER.debug("Got current reading: %s", current)
 
                 # If we received a real-time reading, historical sync is over.
@@ -306,11 +315,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             # This library call sends the necessary command to the device to
             # finalize the historical data sync and switch to real-time mode.
-            _LOGGER.debug("Calling collector.clear_historical_data() to acknowledge sync completion.")
+            _LOGGER.info("Calling collector.clear_historical_data() to acknowledge sync completion.")
             await self.hass.async_add_executor_job(
                 self._collector.clear_historical_data
             )
-            _LOGGER.debug("Acknowledged historical data completion to device.")
+            _LOGGER.info("Acknowledged historical data completion to device. Device should now switch to real-time mode.")
         except Exception as err:
             _LOGGER.warning("Error acknowledging historical data completion: %s", err, exc_info=True)
 
