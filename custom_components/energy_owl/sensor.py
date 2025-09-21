@@ -10,8 +10,8 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent, EntityCategory
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -35,33 +35,47 @@ async def async_setup_entry(
     ]
 
     async_add_entities(sensors)    
+    
+class OwlEntity(CoordinatorEntity):
+    """Base class for Energy OWL entities."""
+
+    _attr_should_poll = False
+
+    def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        self.config_entry = config_entry
+        port = config_entry.data.get("port", "unknown")
+        port_safe = str.replace(port, '/', '-').replace('\\', '-')
+        self._device_unique_id = f"CM160-{port_safe}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the device info, linking all entities to a single device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._device_unique_id)},
+        )
 
 
-class OwlCMSensor(CoordinatorEntity, SensorEntity):
+class OwlCMSensor(OwlEntity, SensorEntity):
     """Representation of an OWL CM160 current sensor."""
 
     _attr_name = "CM160 - Current"
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_should_poll = False
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.config_entry = config_entry
-
-        # Create unique ID based on port
-        port = config_entry.data.get("port", "unknown")
-        port_safe = str.replace(port, '/', '-').replace('\\', '-')
-        self._attr_unique_id = f"CM160-{port_safe}-current"
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{self._device_unique_id}-current"
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return the device info."""
+        """Return the device info, which is shared across all entities."""
         port = self.config_entry.data.get("port", "unknown")
         return DeviceInfo(
-            identifiers={(DOMAIN, self._attr_unique_id)},
+            identifiers={(DOMAIN, self._device_unique_id)},
             name=f"Energy OWL CM160 ({port})",
             manufacturer="Energy OWL",
             model="CM160",
@@ -103,12 +117,6 @@ class OwlCMSensor(CoordinatorEntity, SensorEntity):
             "total_updates": self.coordinator.data.get("total_updates", 0),
             "historical_data_complete": self.coordinator.data.get("historical_data_complete", False),
             "historical_data_count": self.coordinator.data.get("historical_data_count", 0),
-            # Owlsensor device state information
-            "protocol_state": self.coordinator.data.get("protocol_state"),
-            "connection_state": self.coordinator.data.get("connection_state"),
-            "last_message_type": self.coordinator.data.get("last_message_type"),
-            "buffer_status": self.coordinator.data.get("buffer_status"),
-            "sync_mode": self.coordinator.data.get("sync_mode"),
         }
 
         # Add status hint when current is None but device is connected
@@ -122,40 +130,28 @@ class OwlCMSensor(CoordinatorEntity, SensorEntity):
         return attrs
 
 
-class OwlHistoricalDataSensor(CoordinatorEntity, SensorEntity):
+class OwlHistoricalDataSensor(OwlEntity, SensorEntity):
     """Sensor to track historical data collection progress."""
 
     _attr_name = "CM160 - Historical Data Status"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_should_poll = False
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.config_entry = config_entry
-
-        # Create unique ID based on port
-        port = config_entry.data.get("port", "unknown")
-        port_safe = str.replace(port, '/', '-').replace('\\', '-')
-        self._attr_unique_id = f"CM160-{port_safe}-historical-status"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return the device info."""
-        port = self.config_entry.data.get("port", "unknown")
-        port_safe = port.replace('/', '-').replace('\\', '-')
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"CM160-{port_safe}-current")},
-        )
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{self._device_unique_id}-historical-status"
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.connected
+        return self.coordinator.last_update_success or self.coordinator.connected
 
     @property
     def native_value(self) -> str | None:
         """Return a user-friendly status message."""
+        if not self.available:
+            return "Unavailable"
+            
         if not self.coordinator.data:
             return "Disconnected"
 

@@ -95,76 +95,75 @@ async def _update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def _register_services(hass: HomeAssistant) -> None:
     """Register services for the integration."""
 
+    def _get_coordinator_from_call(call: ServiceCall) -> OwlDataUpdateCoordinator:
+        """Get the coordinator for a service call from the targeted device."""
+        device_reg = dr.async_get(hass)
+
+        # In case multiple devices are targeted, we only handle the first one.
+        target_device_id = next(iter(call.data.get("device_id", [])), None)
+        if not target_device_id:
+            raise ValueError("No device_id targeted for service call")
+
+        device = device_reg.async_get(target_device_id)
+        if not device:
+            raise ValueError(f"Device {target_device_id} not found in device registry")
+
+        # Find the config entry associated with this device
+        config_entry_id = next(iter(device.config_entries), None)
+        if not config_entry_id:
+            raise ValueError(
+                f"Device {target_device_id} not associated with a config entry"
+            )
+
+        if config_entry_id not in hass.data[DOMAIN]:
+            raise ValueError(
+                f"Integration for device {target_device_id} not ready or not found"
+            )
+
+        return hass.data[DOMAIN][config_entry_id][COORDINATOR]
+
     async def get_historical_data(call: ServiceCall) -> dict:
         """Service to get historical data from the device."""
-        device_id = call.data.get("device_id")
+        coordinator = _get_coordinator_from_call(call)
         clear_existing = call.data.get("clear_existing", False)
 
-        if not device_id:
-            raise ValueError("device_id is required")
-
-        # Find the coordinator for this device
-        coordinator = None
-        for entry_data in hass.data[DOMAIN].values():
-            if isinstance(entry_data, dict) and COORDINATOR in entry_data:
-                coord = entry_data[COORDINATOR]
-                port_safe = coord.port.replace('/', '-').replace('\\', '-')
-                coord_device_id = f"CM160-{port_safe}"
-                if coord_device_id == device_id:
-                    coordinator = coord
-                    break
-
-        if not coordinator:
-            raise ValueError(f"Device {device_id} not found")
-
-        # Clear existing data if requested (reset tracking only, don't reset device)
-        if clear_existing:
-            coordinator._historical_data_complete = False
-            coordinator._historical_data_count = 0
-            coordinator._last_historical_check = 0
-            _LOGGER.info("Reset historical data tracking for device %s", device_id)
+        # Clear existing data if requested
+        if clear_existing and coordinator._collector:
+            await hass.async_add_executor_job(
+                coordinator._collector.clear_historical_data
+            )
+            # Reset coordinator state after clearing
+            coordinator._historical_data_complete = False  # pylint: disable=protected-access
+            coordinator._historical_data_count = 0  # pylint: disable=protected-access
+            coordinator._last_historical_check = 0  # pylint: disable=protected-access
 
         # Get current historical data
         historical_data = await coordinator.get_historical_data()
 
         return {
-            "device_id": device_id,
+            "device_id": next(iter(call.data.get("device_id", [])), None),
             "historical_data_count": len(historical_data),
             "historical_data_complete": coordinator.historical_data_complete,
             "records": [
-                {
-                    "timestamp": record["timestamp"].isoformat(),
-                    "current": record["current"]
-                }
+                {"timestamp": record["timestamp"].isoformat(), "current": record["current"]}
                 for record in historical_data
-            ] if len(historical_data) <= 100 else [],  # Limit to 100 records in response
+            ],
         }
 
     async def clear_historical_data(call: ServiceCall) -> None:
         """Service to clear historical data from the device."""
-        device_id = call.data.get("device_id")
+        coordinator = _get_coordinator_from_call(call)
+        device_id = next(iter(call.data.get("device_id", [])), None)
 
-        if not device_id:
-            raise ValueError("device_id is required")
-
-        # Find the coordinator for this device
-        coordinator = None
-        for entry_data in hass.data[DOMAIN].values():
-            if isinstance(entry_data, dict) and COORDINATOR in entry_data:
-                coord = entry_data[COORDINATOR]
-                port_safe = coord.port.replace('/', '-').replace('\\', '-')
-                coord_device_id = f"CM160-{port_safe}"
-                if coord_device_id == device_id:
-                    coordinator = coord
-                    break
-
-        if not coordinator:
-            raise ValueError(f"Device {device_id} not found")
-
-        # Reset historical data tracking (don't reset device state)
-        coordinator._historical_data_complete = False
-        coordinator._historical_data_count = 0
-        coordinator._last_historical_check = 0
+        # Clear historical data
+        if coordinator._collector:
+            await hass.async_add_executor_job(
+                coordinator._collector.clear_historical_data
+            )
+        # Reset coordinator state after clearing
+        coordinator._historical_data_complete = False  # pylint: disable=protected-access
+        coordinator._historical_data_count = 0  # pylint: disable=protected-access
+        coordinator._last_historical_check = 0  # pylint: disable=protected-access
 
         _LOGGER.info("Historical data cleared for device %s", device_id)
 
