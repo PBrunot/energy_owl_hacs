@@ -73,10 +73,6 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             )
             await self._collector.connect()
 
-            # Validate connection by checking if the collector is properly connected
-            if not hasattr(self._collector, '_connected') or not self._collector._connected:
-                raise UpdateFailed(f"Device connection validation failed for {self.port}")
-
             self._connected = True
             self._last_error = None
             _LOGGER.info(
@@ -186,7 +182,16 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         if self._collector:
             def _cleanup(collector) -> None:
                 """Clean up the collector object."""
-                del collector
+                try:
+                    # Properly close the collector if it has a close method
+                    if hasattr(collector, 'close'):
+                        collector.close()
+                    elif hasattr(collector, 'disconnect'):
+                        collector.disconnect()
+                except Exception as err:
+                    _LOGGER.debug("Error during collector cleanup: %s", err)
+                finally:
+                    del collector
 
             await self.hass.async_add_executor_job(_cleanup, self._collector)
             self._collector = None
