@@ -10,6 +10,7 @@ from .const import COORDINATOR, DOMAIN
 from .coordinator import OwlDataUpdateCoordinator
 from .current_sensor import OwlCMSensor
 from .historical_data_sensor import OwlHistoricalDataSensor
+from .ha_historical_sensor import OwlHAHistoricalSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ async def async_setup_entry(
     sensors = [
         OwlCMSensor(coordinator, config_entry),
         OwlHistoricalDataSensor(coordinator, config_entry),
+        OwlHAHistoricalSensor(coordinator, config_entry),
     ]
 
     async_add_entities(sensors)
