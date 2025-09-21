@@ -117,14 +117,12 @@ async def _register_services(hass: HomeAssistant) -> None:
         if not coordinator:
             raise ValueError(f"Device {device_id} not found")
 
-        # Clear existing data if requested
-        if clear_existing and coordinator._collector:
-            await hass.async_add_executor_job(
-                coordinator._collector.clear_historical_data
-            )
+        # Clear existing data if requested (reset tracking only, don't reset device)
+        if clear_existing:
             coordinator._historical_data_complete = False
             coordinator._historical_data_count = 0
             coordinator._last_historical_check = 0
+            _LOGGER.info("Reset historical data tracking for device %s", device_id)
 
         # Get current historical data
         historical_data = await coordinator.get_historical_data()
@@ -163,12 +161,7 @@ async def _register_services(hass: HomeAssistant) -> None:
         if not coordinator:
             raise ValueError(f"Device {device_id} not found")
 
-        # Clear historical data
-        if coordinator._collector:
-            await hass.async_add_executor_job(
-                coordinator._collector.clear_historical_data
-            )
-
+        # Reset historical data tracking (don't reset device state)
         coordinator._historical_data_complete = False
         coordinator._historical_data_count = 0
         coordinator._last_historical_check = 0

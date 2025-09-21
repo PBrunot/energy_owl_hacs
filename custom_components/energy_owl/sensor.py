@@ -103,6 +103,12 @@ class OwlCMSensor(CoordinatorEntity, SensorEntity):
             "total_updates": self.coordinator.data.get("total_updates", 0),
             "historical_data_complete": self.coordinator.data.get("historical_data_complete", False),
             "historical_data_count": self.coordinator.data.get("historical_data_count", 0),
+            # Owlsensor device state information
+            "protocol_state": self.coordinator.data.get("protocol_state"),
+            "connection_state": self.coordinator.data.get("connection_state"),
+            "last_message_type": self.coordinator.data.get("last_message_type"),
+            "buffer_status": self.coordinator.data.get("buffer_status"),
+            "sync_mode": self.coordinator.data.get("sync_mode"),
         }
 
         # Add status hint when current is None but device is connected

@@ -104,10 +104,13 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 if not self._historical_data_complete:
                     await self._process_and_consume_historical_data()
 
-                # Phase 2: Get current reading (always available for sensor)
+                # Phase 2: Get current reading and device state information
                 current = await self.hass.async_add_executor_job(
                     self._collector.get_current
                 )
+
+                # Get additional owlsensor state information
+                device_state = await self._get_device_state_info()
 
                 self._last_error = None
                 self._connected = True
@@ -128,6 +131,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     "total_updates": self._total_updates,
                     "historical_data_complete": self._historical_data_complete,
                     "historical_data_count": self._historical_data_count,
+                    **device_state,  # Include owlsensor device state info
                 }
 
             except Exception as err:
@@ -236,20 +240,53 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("Error emitting historical record event: %s", err)
 
     async def _consume_historical_records(self, count: int) -> None:
-        """Consume/acknowledge historical records from device buffer to allow transition to real-time."""
+        """Log historical records consumption without interfering with device state."""
         if not self._collector or count <= 0:
             return
 
         try:
-            # Use the library's method to consume/clear the processed historical data
-            # This is crucial for the device to know we've received the data and can transition to real-time
-            await self.hass.async_add_executor_job(
-                self._collector.clear_historical_data
-            )
-            _LOGGER.debug("Consumed %d historical records from device buffer", count)
+            # BUGFIX: Do NOT call clear_historical_data() as it resets device state
+            # and causes infinite handshake loop. Let the device naturally complete
+            # its historical sync protocol instead of forcing a reset.
+            _LOGGER.debug("Acknowledged %d historical records (allowing natural device transition)", count)
 
         except Exception as err:
-            _LOGGER.warning("Error consuming historical records: %s", err)
+            _LOGGER.warning("Error acknowledging historical records: %s", err)
+
+    async def _get_device_state_info(self) -> dict[str, Any]:
+        """Get owlsensor device state and protocol information."""
+        if not self._collector:
+            return {}
+
+        try:
+            # Safely get device state information from owlsensor
+            state_info = {}
+
+            # Get protocol state if available
+            if hasattr(self._collector, '_protocol_state'):
+                state_info["protocol_state"] = getattr(self._collector, '_protocol_state', 'unknown')
+
+            # Get connection state details
+            if hasattr(self._collector, '_connection_state'):
+                state_info["connection_state"] = getattr(self._collector, '_connection_state', 'unknown')
+
+            # Get last received message type if available
+            if hasattr(self._collector, '_last_message_type'):
+                state_info["last_message_type"] = getattr(self._collector, '_last_message_type', 'unknown')
+
+            # Get buffer status if available
+            if hasattr(self._collector, '_buffer_status'):
+                state_info["buffer_status"] = getattr(self._collector, '_buffer_status', 'unknown')
+
+            # Check if device is in sync mode
+            if hasattr(self._collector, '_sync_mode'):
+                state_info["sync_mode"] = getattr(self._collector, '_sync_mode', False)
+
+            return state_info
+
+        except Exception as err:
+            _LOGGER.debug("Error getting device state info: %s", err)
+            return {}
 
     @property
     def connected(self) -> bool:
