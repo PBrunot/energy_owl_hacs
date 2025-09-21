@@ -46,6 +46,9 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._last_error: str | None = None
         self._error_count = 0
         self._total_updates = 0
+        self._historical_data_complete = False
+        self._historical_data_count = 0
+        self._last_historical_check = 0
 
         super().__init__(
             hass,
@@ -75,6 +78,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
             self._connected = True
             self._last_error = None
+            self._historical_data_complete = False
+            self._historical_data_count = 0
             _LOGGER.info(
                 "Successfully connected to OWL device at %s. "
                 "Device will continue sending historical data before providing real-time updates.",
@@ -94,6 +99,9 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         for attempt in range(self.max_retries + 1):
             try:
                 self._total_updates += 1
+
+                # Check for historical data updates
+                await self._check_historical_data()
 
                 # Get current reading
                 current = await self.hass.async_add_executor_job(
@@ -116,6 +124,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     "last_error": self._last_error,
                     "error_count": self._error_count,
                     "total_updates": self._total_updates,
+                    "historical_data_complete": self._historical_data_complete,
+                    "historical_data_count": self._historical_data_count,
                 }
 
             except Exception as err:
@@ -157,6 +167,65 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         # This should never be reached, but just in case
         raise UpdateFailed("Unexpected error in data update")
 
+    async def _check_historical_data(self) -> None:
+        """Check for new historical data and emit events."""
+        if not self._collector:
+            return
+
+        try:
+            # Check if historical data collection is complete
+            complete = await self.hass.async_add_executor_job(
+                self._collector.is_historical_data_complete
+            )
+
+            if complete and not self._historical_data_complete:
+                self._historical_data_complete = True
+                _LOGGER.info("Historical data collection completed for device at %s", self.port)
+
+                # Fire completion event with proper domain prefix
+                port_safe = self.port.replace('/', '-').replace('\\', '-')
+                self.hass.bus.fire(
+                    f"{DOMAIN}_historical_data_complete",
+                    {"device_port": self.port, "device_id": f"CM160-{port_safe}"}
+                )
+
+            # Check for new historical data
+            historical_data = await self.hass.async_add_executor_job(
+                self._collector.get_historical_data
+            )
+
+            new_count = len(historical_data)
+            if new_count > self._last_historical_check:
+                new_records = historical_data[self._last_historical_check:]
+                self._last_historical_check = new_count
+                self._historical_data_count = new_count
+
+                # Fire event for new historical data
+                if new_records:
+                    _LOGGER.debug("Processing %d new historical records", len(new_records))
+                    await self._process_historical_records(new_records)
+
+        except Exception as err:
+            _LOGGER.warning("Error checking historical data: %s", err)
+
+    async def _process_historical_records(self, records: list) -> None:
+        """Process new historical records and emit events."""
+        for record in records:
+            try:
+                # Fire event for each historical record with proper domain prefix
+                port_safe = self.port.replace('/', '-').replace('\\', '-')
+                self.hass.bus.fire(
+                    f"{DOMAIN}_historical_data",
+                    {
+                        "device_port": self.port,
+                        "device_id": f"CM160-{port_safe}",
+                        "timestamp": record["timestamp"].isoformat(),
+                        "current": record["current"],
+                    }
+                )
+            except Exception as err:
+                _LOGGER.warning("Error processing historical record: %s", err)
+
     @property
     def connected(self) -> bool:
         """Return if the device is connected."""
@@ -176,6 +245,29 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
     def total_updates(self) -> int:
         """Return the total number of updates attempted."""
         return self._total_updates
+
+    @property
+    def historical_data_complete(self) -> bool:
+        """Return if historical data collection is complete."""
+        return self._historical_data_complete
+
+    @property
+    def historical_data_count(self) -> int:
+        """Return the number of historical records collected."""
+        return self._historical_data_count
+
+    async def get_historical_data(self) -> list:
+        """Return the historical data from the collector."""
+        if not self._collector:
+            return []
+
+        try:
+            return await self.hass.async_add_executor_job(
+                self._collector.get_historical_data
+            )
+        except Exception as err:
+            _LOGGER.warning("Error getting historical data: %s", err)
+            return []
 
     async def async_disconnect(self) -> None:
         """Disconnect from the device."""

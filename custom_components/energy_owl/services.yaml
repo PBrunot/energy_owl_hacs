@@ -1,0 +1,22 @@
+get_historical_data:
+  name: Get Historical Data
+  description: Retrieve historical data from the Energy OWL CM160 device.
+  target:
+    device:
+      integration: energy_owl
+  response:
+    optional: true
+  fields:
+    clear_existing:
+      name: Clear Existing Data
+      description: Whether to clear existing historical data before collecting new data.
+      default: false
+      selector:
+        boolean:
+
+clear_historical_data:
+  name: Clear Historical Data
+  description: Clear stored historical data from the Energy OWL CM160 device.
+  target:
+    device:
+      integration: energy_owl
