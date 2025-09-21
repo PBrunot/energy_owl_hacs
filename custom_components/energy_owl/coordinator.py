@@ -74,7 +74,9 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 "while device sends historical data...",
                 self.port
             )
+            _LOGGER.debug("Calling collector.connect()")
             await self._collector.connect()
+            _LOGGER.debug("Collector.connect() completed")
 
             self._connected = True
             self._last_error = None
@@ -93,8 +95,16 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Unified data fetch method - handles both historical and real-time data transparently."""
+        _LOGGER.debug(
+            "Starting update cycle. Connected: %s, Historical Complete: %s",
+            self._connected,
+            self._historical_data_complete,
+        )
         if not self._connected or self._collector is None:
+            _LOGGER.debug("Not connected, attempting to connect.")
             await self._async_connect()
+            if not self._collector:
+                raise UpdateFailed("Collector is not available after connection attempt.")
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -104,20 +114,33 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
                 # Phase 1: Process historical data until the sync is complete.
                 # During this phase, `current` will be None.
+                _LOGGER.debug("Checking historical data status. Complete: %s", self._historical_data_complete)
                 if not self._historical_data_complete:
                     await self._process_and_consume_historical_data()
 
-                # Phase 2: Once historical sync is complete, get real-time current readings.
-                if self._historical_data_complete:
-                    current = await self.hass.async_add_executor_job(
-                        self._collector.get_current
+                # Phase 2: Always attempt to get a real-time reading.
+                # The library should return None if it's not available yet (i.e., during historical sync).
+                _LOGGER.debug("Attempting to fetch current reading.")
+                current = await self.hass.async_add_executor_job(
+                    self._collector.get_current
+                )
+                _LOGGER.debug("Got current reading: %s", current)
+
+                # If we received a real-time reading, historical sync is over.
+                # This acts as a fallback if is_historical_data_complete() gets stuck.
+                if current is not None and not self._historical_data_complete:
+                    _LOGGER.info(
+                        "Real-time reading received. Finalizing historical data sync."
                     )
+                    await self._acknowledge_historical_sync_completion()
+                    self._historical_data_complete = True
 
                 # Always get latest debug info from the collector
                 if self._collector and hasattr(self._collector, "get_debug_info"):
                     debug_info = await self.hass.async_add_executor_job(
                         self._collector.get_debug_info
                     )
+                    _LOGGER.debug("Got debug info: %s", debug_info)
 
                 self._last_error = None
                 self._connected = True
@@ -149,6 +172,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     attempt + 1,
                     self.max_retries + 1,
                     err,
+                    exc_info=True,
                 )
 
                 if attempt < self.max_retries:
@@ -184,12 +208,15 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         if not self._collector:
             return
         try:
+            _LOGGER.debug("Processing historical data...")
             # Get available historical data
             historical_data = await self.hass.async_add_executor_job(
                 self._collector.get_historical_data
             )
+            _LOGGER.debug("get_historical_data returned %d records", len(historical_data))
 
             new_count = len(historical_data)
+            _LOGGER.debug("New historical count: %d, last check count: %d", new_count, self._last_historical_check)
             if new_count > self._last_historical_check:
                 new_records = historical_data[self._last_historical_check:]
                 _LOGGER.debug("Processing %d new historical records", len(new_records))
@@ -200,9 +227,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             self._historical_data_count = new_count
 
             # Now, check if the device has finished sending all historical data
+            _LOGGER.debug("Checking if historical data is complete...")
             complete = await self.hass.async_add_executor_job(
                 self._collector.is_historical_data_complete
             )
+            _LOGGER.debug("is_historical_data_complete returned: %s", complete)
 
             if complete and not self._historical_data_complete:
                 _LOGGER.info(
@@ -226,7 +255,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 )
 
         except Exception as err:
-            _LOGGER.warning("Error processing historical data: %s", err)
+            _LOGGER.warning("Error processing historical data: %s", err, exc_info=True)
 
     async def _emit_historical_records(self, records: list) -> None:
         """Emit historical records as Home Assistant events."""
@@ -254,12 +283,13 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             # This library call sends the necessary command to the device to
             # finalize the historical data sync and switch to real-time mode.
+            _LOGGER.debug("Calling collector.clear_historical_data() to acknowledge sync completion.")
             await self.hass.async_add_executor_job(
                 self._collector.clear_historical_data
             )
             _LOGGER.debug("Acknowledged historical data completion to device.")
         except Exception as err:
-            _LOGGER.warning("Error acknowledging historical data completion: %s", err)
+            _LOGGER.warning("Error acknowledging historical data completion: %s", err, exc_info=True)
 
     @property
     def connected(self) -> bool:

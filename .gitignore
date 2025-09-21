@@ -160,3 +160,4 @@ cython_debug/
 #.idea/
 /Scripts
 pyvenv.cfg
+bug_hist.md

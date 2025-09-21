@@ -56,6 +56,29 @@ class OwlEntity(CoordinatorEntity):
             identifiers={(DOMAIN, self._device_unique_id)},
         )
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return common diagnostic attributes for all OWL entities."""
+        if not self.coordinator.data:
+            return {}
+
+        attrs = {
+            "connected": self.coordinator.data.get("connected", False),
+            "last_error": self.coordinator.data.get("last_error"),
+            "error_count": self.coordinator.data.get("error_count", 0),
+            "total_updates": self.coordinator.data.get("total_updates", 0),
+            "historical_data_complete": self.coordinator.data.get("historical_data_complete", False),
+            "historical_data_count": self.coordinator.data.get("historical_data_count", 0),
+        }
+
+        # Add low-level debug info from the collector if available
+        debug_info = self.coordinator.data.get("debug_info")
+        if debug_info and isinstance(debug_info, dict):
+            for key, value in debug_info.items():
+                attrs[f"collector_{key}"] = value
+
+        return attrs
+
 
 class OwlCMSensor(OwlEntity, SensorEntity):
     """Representation of an OWL CM160 current sensor."""
@@ -107,31 +130,16 @@ class OwlCMSensor(OwlEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return diagnostic attributes."""
-        if not self.coordinator.data:
-            return {}
-
-        attrs = {
-            "connected": self.coordinator.data.get("connected", False),
-            "last_error": self.coordinator.data.get("last_error"),
-            "error_count": self.coordinator.data.get("error_count", 0),
-            "total_updates": self.coordinator.data.get("total_updates", 0),
-            "historical_data_complete": self.coordinator.data.get("historical_data_complete", False),
-            "historical_data_count": self.coordinator.data.get("historical_data_count", 0),
-        }
+        attrs = super().extra_state_attributes
 
         # Add status hint when current is None but device is connected
-        current = self.coordinator.data.get("current")
-        if current is None and self.coordinator.data.get("connected", False):
-            if not self.coordinator.data.get("historical_data_complete", False):
-                attrs["status"] = "Receiving historical data from device"
-            else:
-                attrs["status"] = "Waiting for real-time updates"
-
-        # Add low-level debug info from the collector if available
-        debug_info = self.coordinator.data.get("debug_info")
-        if debug_info and isinstance(debug_info, dict):
-            for key, value in debug_info.items():
-                attrs[f"collector_{key}"] = value
+        if self.coordinator.data:
+            current = self.coordinator.data.get("current")
+            if current is None and self.coordinator.data.get("connected", False):
+                if not self.coordinator.data.get("historical_data_complete", False):
+                    attrs["status"] = "Receiving historical data from device"
+                else:
+                    attrs["status"] = "Waiting for real-time updates"
 
         return attrs
 
@@ -178,23 +186,18 @@ class OwlHistoricalDataSensor(OwlEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return diagnostic attributes."""
-        if not self.coordinator.data:
-            return {}
+        attrs = super().extra_state_attributes
 
-        count = self.coordinator.data.get("historical_data_count", 0)
-        complete = self.coordinator.data.get("historical_data_complete", False)
+        if self.coordinator.data:
+            count = self.coordinator.data.get("historical_data_count", 0)
+            complete = self.coordinator.data.get("historical_data_complete", False)
 
-        attrs = {
-            "historical_data_complete": complete,
-            "historical_records_count": count,
-        }
-
-        # Add helpful context based on status
-        if complete:
-            attrs["message"] = f"Historical data sync completed with {count} records"
-        elif count > 0:
-            attrs["message"] = f"Syncing historical data... {count} records received"
-        else:
-            attrs["message"] = "Waiting for historical data from device"
+            # Add helpful context based on status
+            if complete:
+                attrs["message"] = f"Historical data sync completed with {count} records"
+            elif count > 0:
+                attrs["message"] = f"Syncing historical data... {count} records received"
+            else:
+                attrs["message"] = "Waiting for historical data from device"
 
         return attrs

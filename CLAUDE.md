@@ -62,3 +62,4 @@ custom_components/energy_owl/
 - Uses `persistent_directory: "local"` for local development
 - No ZIP releases - direct repository integration
 - README rendering enabled for HACS store display
+- remember that HA is running on a different machine, ask the user if you need tests and logs.
