@@ -217,8 +217,9 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     elif self._chunks_pushed == 0:  # First time past wait period
                         # Send notification now that we're ready to start processing
                         estimated_chunks = (len(historical_data) + self._chunk_size - 1) // self._chunk_size
-                        estimated_batches = (len(historical_data) + 25 - 1) // 25  # Assuming 25 states per batch
-                        estimated_time_hours = (estimated_batches * 4) / 3600  # 3s + 1s = 4s per batch
+                        # Single state writes with rapid succession
+                        estimated_states = len(historical_data)
+                        estimated_time_hours = (estimated_states * 0.1) / 3600  # 0.1s per state
                         
                         self.hass.async_create_task(
                             self.hass.services.async_call(
@@ -226,7 +227,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                                 "create",
                                 {
                                     "title": "Energy OWL Historical Data Import Started",
-                                    "message": f"Starting import of {len(historical_data)} historical records. Estimated time: {estimated_time_hours:.1f} hours ({estimated_batches} batches of ~25 records each). Import will slow down automatically if database errors occur.",
+                                    "message": f"Starting import of {len(historical_data)} historical records. Estimated time: {estimated_time_hours:.1f} hours (single-state writes at 0.1s intervals). Import will slow down automatically if database errors occur.",
                                     "notification_id": f"energy_owl_historical_import_started_{self._device_unique_id}",
                                 },
                             )
@@ -423,14 +424,13 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             return
 
         # Limit the number of states we try to push at once to reduce database load
-        # Use moderate batch size - balance between speed and database safety for large imports
-        # Start with smaller batches, increase if no errors occur
-        base_batch_size = 25 if self._consecutive_db_errors == 0 else max(5, 25 - (self._consecutive_db_errors * 3))
-        batch_size = min(self._chunk_size, base_batch_size)
+        # Push one state at a time in rapid succession to minimize database conflicts
+        # This prevents bulk operation race conditions while maintaining good speed
+        batch_size = 1  # Always push exactly one state at a time
         states_to_push = self._pending_historical_states[:batch_size]
         if len(self._pending_historical_states) > batch_size:
-            _LOGGER.debug("Limiting push to %d states (out of %d pending) to reduce database load",
-                         len(states_to_push), len(self._pending_historical_states))
+            _LOGGER.debug("Pushing single state (out of %d pending) to minimize database conflicts",
+                         len(self._pending_historical_states))
 
         try:
             # Update the historical states attribute with limited states
@@ -521,17 +521,17 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                         else:
                             raise write_err
 
-            _LOGGER.info(
-                "Successfully pushed %d historical states to Historical Current Data sensor",
-                len(states_to_push)
+            _LOGGER.debug(
+                "Successfully pushed 1 historical state to Historical Current Data sensor (%d remaining)",
+                len(self._pending_historical_states)
             )
 
             # Remove only the pushed states to save memory
             self._pending_historical_states = self._pending_historical_states[len(states_to_push):]
 
-            # Minimal delay after successful writes - prioritize import speed
-            # Still give recorder a moment to process but keep things moving
-            await asyncio.sleep(1)  # 1 second delay after each batch write
+            # Minimal delay after each single state write - rapid succession
+            # Just enough time to prevent overwhelming the database
+            await asyncio.sleep(0.1)  # 100ms delay after each single state write
 
         except Exception as err:
             _LOGGER.error("Error pushing %d pending states to HA: %s", len(states_to_push), err)
