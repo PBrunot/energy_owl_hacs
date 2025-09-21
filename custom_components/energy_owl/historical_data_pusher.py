@@ -21,7 +21,7 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
     """Entity that automatically pushes historical data in chunks to Home Assistant."""
 
     _attr_name = "CM160 - Historical Data Pusher"
-    _attr_entity_category = None  # Make it visible in main interface, not just diagnostic
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
         """Initialize the historical data pusher."""
@@ -34,6 +34,8 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
         self._chunk_size = 500
         self._current_status = "Waiting for connection"
         self._progress_percentage = 0
+        self._acquisition_start_time: datetime | None = None
+        self._acquisition_wait_time = 180  # Wait 3 minutes before starting to push
 
     @property
     def available(self) -> bool:
@@ -73,8 +75,19 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
             self._current_status = f"🔄 Processing chunk {self._chunks_pushed} ({self._processed_count}/{total_historical} records)"
             return f"🔄 Processing ({self._progress_percentage:.0f}%)"
         else:
-            self._current_status = "⏳ Waiting for historical data"
-            return "⏳ Waiting for data"
+            # Check if we're in acquisition wait period
+            if self._acquisition_start_time and total_historical > 0:
+                elapsed = (datetime.now() - self._acquisition_start_time).total_seconds()
+                remaining = max(0, self._acquisition_wait_time - elapsed)
+                if remaining > 0:
+                    self._current_status = f"⏳ Waiting for acquisition to complete ({remaining:.0f}s remaining)"
+                    return f"⏳ Waiting ({remaining:.0f}s)"
+                else:
+                    self._current_status = "🔄 Ready to start processing"
+                    return "🔄 Ready to process"
+            else:
+                self._current_status = "⏳ Waiting for historical data"
+                return "⏳ Waiting for data"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -82,6 +95,13 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
         attrs = super().extra_state_attributes
 
         total_historical = self.coordinator.data.get("historical_data_count", 0) if self.coordinator.data else 0
+
+        # Calculate acquisition wait info
+        acquisition_elapsed = 0
+        acquisition_remaining = 0
+        if self._acquisition_start_time:
+            acquisition_elapsed = (datetime.now() - self._acquisition_start_time).total_seconds()
+            acquisition_remaining = max(0, self._acquisition_wait_time - acquisition_elapsed)
 
         attrs.update({
             "status_detail": self._current_status,
@@ -93,6 +113,10 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
             "remaining_records": max(0, total_historical - self._processed_count) if total_historical > 0 else 0,
             "last_push_time": self._last_push_time.isoformat() if self._last_push_time else None,
             "is_processing": self._push_task is not None and not self._push_task.done(),
+            "acquisition_wait_time_seconds": self._acquisition_wait_time,
+            "acquisition_elapsed_seconds": acquisition_elapsed,
+            "acquisition_remaining_seconds": acquisition_remaining,
+            "acquisition_start_time": self._acquisition_start_time.isoformat() if self._acquisition_start_time else None,
         })
 
         return attrs
@@ -119,21 +143,40 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
                     await asyncio.sleep(5)  # Wait 5 seconds before retrying
                     continue
 
-                # Send notification on first data availability
+                # Start acquisition timer on first data availability
                 if first_run and len(historical_data) > 0:
                     first_run = False
-                    estimated_chunks = (len(historical_data) + self._chunk_size - 1) // self._chunk_size
-                    self.hass.async_create_task(
-                        self.hass.services.async_call(
-                            "persistent_notification",
-                            "create",
-                            {
-                                "title": "Energy OWL Historical Data Import Started",
-                                "message": f"Started importing {len(historical_data)} historical records from CM160 device. Estimated {estimated_chunks} chunks to process.",
-                                "notification_id": f"energy_owl_import_started_{self._device_unique_id}",
-                            },
-                        )
+                    self._acquisition_start_time = datetime.now()
+                    _LOGGER.info(
+                        "Historical data acquisition started. Found %d records. Waiting %d seconds before processing to allow complete acquisition.",
+                        len(historical_data),
+                        self._acquisition_wait_time
                     )
+
+                # Check if we should wait for acquisition to complete
+                if self._acquisition_start_time:
+                    elapsed = (datetime.now() - self._acquisition_start_time).total_seconds()
+                    if elapsed < self._acquisition_wait_time:
+                        # Still in wait period, update status and continue waiting
+                        remaining = self._acquisition_wait_time - elapsed
+                        self._current_status = f"⏳ Waiting for acquisition to complete ({remaining:.0f}s remaining)"
+                        self.async_write_ha_state()
+                        await asyncio.sleep(5)
+                        continue
+                    elif self._chunks_pushed == 0:  # First time past wait period
+                        # Send notification now that we're ready to start processing
+                        estimated_chunks = (len(historical_data) + self._chunk_size - 1) // self._chunk_size
+                        self.hass.async_create_task(
+                            self.hass.services.async_call(
+                                "persistent_notification",
+                                "create",
+                                {
+                                    "title": "Energy OWL Historical Data Import Started",
+                                    "message": f"Starting import of {len(historical_data)} historical records from CM160 device. Estimated {estimated_chunks} chunks to process.",
+                                    "notification_id": f"energy_owl_import_started_{self._device_unique_id}",
+                                },
+                            )
+                        )
 
                 # Sort by timestamp (most recent first as requested)
                 historical_data.sort(key=lambda x: x["timestamp"], reverse=True)

@@ -238,17 +238,20 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 self._collector.is_historical_data_complete
             )
             if complete_from_library:
-                _LOGGER.debug("Library reports historical data is complete.")
+                _LOGGER.info("Library reports historical data is complete. Total records: %d", self._historical_data_count)
 
             # 3. Check for completion using our own coordinator-level timeout
-            HISTORICAL_DATA_TIMEOUT = self.update_interval.total_seconds() * 2
+            # Increase timeout for historical data - CM160 may send data in batches with gaps
+            HISTORICAL_DATA_TIMEOUT = self.update_interval.total_seconds() * 10  # 5 minutes instead of 1 minute
             complete_from_timeout = False
             if self._last_new_historical_record_time is not None:
                 elapsed = time.monotonic() - self._last_new_historical_record_time
                 if elapsed > HISTORICAL_DATA_TIMEOUT:
                     _LOGGER.warning(
-                        "No new historical data for over %s seconds. Forcing completion.",
+                        "No new historical data for over %s seconds (%.1f minutes). Forcing completion. Total records collected: %d",
                         HISTORICAL_DATA_TIMEOUT,
+                        HISTORICAL_DATA_TIMEOUT / 60,
+                        self._historical_data_count,
                     )
                     complete_from_timeout = True
             elif self._historical_data_count == 0 and self._total_updates > 1:
