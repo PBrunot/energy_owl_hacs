@@ -47,12 +47,14 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
         self._chunks_pushed = 0
         self._last_push_time: datetime | None = None
         self._push_task: asyncio.Task | None = None
-        self._chunk_size = 500
+        self._chunk_size = 50  # Further reduced chunk size to be very gentle on the database
         self._processing_complete = False
         self._acquisition_start_time: datetime | None = None
         self._acquisition_wait_time = 60  # Wait 1 minute before starting to push
         self._pending_historical_states: list[HistoricalState] = []
         self._completion_notification_sent = False
+        self._pushed_timestamps: set[datetime] = set()  # Track what we've already pushed
+        self._last_processed_timestamp: datetime | None = None
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
@@ -196,16 +198,24 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
                             )
                         )
 
-                # Sort by timestamp (oldest first for proper historical order)
-                historical_data.sort(key=lambda x: x["timestamp"])
+                # Sort by timestamp (newest first to prioritize recent data)
+                historical_data.sort(key=lambda x: x["timestamp"], reverse=True)
 
-                # Calculate which chunk to process next
-                start_idx = self._processed_count
-                end_idx = min(start_idx + self._chunk_size, len(historical_data))
+                # Filter out data we've already processed to avoid duplicates
+                if self._last_processed_timestamp:
+                    historical_data = [
+                        record for record in historical_data
+                        if record["timestamp"] > self._last_processed_timestamp
+                    ]
+                    _LOGGER.debug("Filtered %d new records after timestamp %s", len(historical_data), self._last_processed_timestamp)
+
+                # Process data from beginning (most recent first)
+                start_idx = 0
+                end_idx = min(self._chunk_size, len(historical_data))
 
                 # Check if we have new data to process
-                if start_idx >= len(historical_data):
-                    # No more data to process
+                if len(historical_data) == 0:
+                    # No new data to process
                     if self.coordinator.data.get("historical_data_complete", False):
                         # Push any remaining states
                         if self._pending_historical_states:
@@ -249,27 +259,32 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
 
                 if chunk:
                     await self._add_chunk_to_pending_states(chunk, self._chunks_pushed + 1)
-                    self._processed_count = end_idx
+                    self._processed_count += len(chunk)
                     self._chunks_pushed += 1
                     self._last_push_time = datetime.now()
 
-                    # Push states if we have enough or this is the last chunk
-                    if len(self._pending_historical_states) >= self._chunk_size or end_idx >= len(historical_data):
-                        await self._push_pending_states()
+                    # Update the last processed timestamp to the oldest in this chunk
+                    # (since we're processing newest first, the last item is the oldest)
+                    self._last_processed_timestamp = chunk[-1]["timestamp"]
+
+                    # Push states immediately after each chunk with smaller batches
+                    await self._push_pending_states()
+
+                    # Aggressive delay to avoid overwhelming the database
+                    await asyncio.sleep(10)
 
                     # Update the entity state to reflect progress
                     self.async_write_ha_state()
 
                     _LOGGER.info(
-                        "Processed chunk %d with %d records (total processed: %d/%d)",
+                        "Processed chunk %d with %d records (total processed: %d)",
                         self._chunks_pushed,
                         len(chunk),
-                        self._processed_count,
-                        len(historical_data)
+                        self._processed_count
                     )
-
-                # Small delay between chunks to avoid overwhelming HA
-                await asyncio.sleep(1)
+                else:
+                    # No chunk to process, wait longer
+                    await asyncio.sleep(15)
 
         except Exception as err:
             _LOGGER.error("Error in historical data processing task: %s", err, exc_info=True)
@@ -281,6 +296,10 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
             for i, record in enumerate(chunk):
                 # Ensure timestamp has timezone info
                 timestamp = record["timestamp"]
+
+                # Skip if we've already processed this timestamp
+                if timestamp in self._pushed_timestamps:
+                    continue
 
                 # Convert to timezone-aware datetime in Home Assistant's timezone
                 if timestamp.tzinfo is None:
@@ -295,6 +314,9 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
                     _LOGGER.error("Failed to add timezone info to timestamp: %s", timestamp)
                     # Fallback: use current timezone
                     timestamp = timestamp.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+                # Track this timestamp as processed
+                self._pushed_timestamps.add(timestamp)
 
                 # Create HistoricalState objects for each record
                 historical_state = HistoricalState(
@@ -327,7 +349,23 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
             await self.async_update_historical()
 
             # Call the HistoricalSensor method to write states to HA
-            await self.async_write_ha_historical_states()
+            # Add retry logic for database concurrency issues
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await self.async_write_ha_historical_states()
+                    break
+                except Exception as write_err:
+                    if attempt < max_retries - 1:
+                        _LOGGER.warning(
+                            "Failed to write historical states (attempt %d/%d): %s. Retrying in 2 seconds...",
+                            attempt + 1,
+                            max_retries,
+                            write_err
+                        )
+                        await asyncio.sleep(2)
+                    else:
+                        raise write_err
 
             _LOGGER.info(
                 "Successfully pushed %d historical states to Home Assistant",
@@ -339,6 +377,7 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
 
         except Exception as err:
             _LOGGER.error("Error pushing %d pending states to HA: %s", len(self._pending_historical_states), err)
+            # Don't clear pending states on error so we can retry later
 
     async def async_will_remove_from_hass(self) -> None:
         """Cancel the processing task when entity is removed."""
