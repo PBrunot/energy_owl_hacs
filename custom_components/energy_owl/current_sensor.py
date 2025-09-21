@@ -47,7 +47,7 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
         self._chunks_pushed = 0
         self._last_push_time: datetime | None = None
         self._push_task: asyncio.Task | None = None
-        self._chunk_size = 50  # Small chunk size to be gentle on the database
+        self._chunk_size = 100  # Small chunk size to be gentle on the database
         self._processing_complete = False
         self._acquisition_start_time: datetime | None = None
         self._acquisition_wait_time = 60  # Wait 1 minute before starting to push
@@ -286,7 +286,7 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
                     await self._push_pending_states()
 
                     # Aggressive delay to avoid overwhelming the database
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(10)
 
                     # Update the entity state to reflect progress
                     self.async_write_ha_state()
@@ -378,7 +378,7 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
                             max_retries,
                             write_err
                         )
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(3)
                     else:
                         raise write_err
 
