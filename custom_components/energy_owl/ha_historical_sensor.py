@@ -84,32 +84,16 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         )
 
     @property
-    def native_value(self) -> str | None:
-        """Return processing status."""
+    def native_value(self) -> float | None:
+        """Return the current measurement from the complete data stream."""
         if not self.available:
-            return "Unavailable"
+            return None
 
         if not self.coordinator.data:
-            return "Disconnected"
+            return None
 
-        connected = self.coordinator.data.get("connected", False)
-        if not connected:
-            return "Disconnected"
-
-        historical_complete = self.coordinator.data.get("historical_data_complete", False)
-        total_count = self.coordinator.data.get("historical_data_count", 0)
-
-        if self._processing_complete:
-            return f"Complete ({self._processed_count} records)"
-        elif self._processed_count > 0:
-            progress = (self._processed_count / total_count * 100) if total_count > 0 else 0
-            return f"Processing {progress:.1f}% ({self._processed_count}/{total_count})"
-        elif historical_complete:
-            return "Ready to process"
-        elif total_count > 0:
-            return f"Waiting ({total_count} records)"
-        else:
-            return "Waiting for data"
+        # Return the current value from coordinator (real-time data)
+        return self.coordinator.data.get("current")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -119,6 +103,24 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         if self.coordinator.data:
             total_historical = self.coordinator.data.get("historical_data_count", 0)
             historical_complete = self.coordinator.data.get("historical_data_complete", False)
+            connected = self.coordinator.data.get("connected", False)
+
+            # Add processing status
+            if not connected:
+                processing_status = "Disconnected"
+            elif self._processing_complete:
+                processing_status = f"Complete ({self._processed_count} records)"
+            elif self._processed_count > 0:
+                progress = (self._processed_count / total_historical * 100) if total_historical > 0 else 0
+                processing_status = f"Processing {progress:.1f}% ({self._processed_count}/{total_historical})"
+            elif historical_complete:
+                processing_status = "Ready to process"
+            elif total_historical > 0:
+                processing_status = f"Waiting ({total_historical} records)"
+            else:
+                processing_status = "Waiting for data"
+
+            attrs["processing_status"] = processing_status
 
             # Add historical processing information
             if total_historical > 0:
