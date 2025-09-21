@@ -18,7 +18,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfElectricCurrent, EntityCategory
+from homeassistant.const import UnitOfElectricCurrent
 from homeassistant.core import callback
 from homeassistant.helpers.entity import DeviceInfo
 
@@ -36,7 +36,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # Remove diagnostic category to allow proper state display like the working current sensor
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
         """Initialize the historical processor sensor."""
@@ -84,11 +84,8 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
 
     @property
     def available(self) -> bool:
-        """Return if entity is available."""
-        return self.coordinator.connected and (
-            self.coordinator.last_update_success or
-            (self.coordinator.data and self.coordinator.data.get("connected", False))
-        )
+        """Return if entity is available - match the working current sensor logic."""
+        return self.coordinator.last_update_success or self.coordinator.connected
 
     @property
     def native_value(self) -> float | None:
