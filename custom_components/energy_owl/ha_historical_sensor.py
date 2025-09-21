@@ -577,7 +577,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             if skipped_count > 0:
                 _LOGGER.info("Skipped %d existing records in chunk %d to avoid duplicates", skipped_count, chunk_number)
 
-        except Exception as err:in 
+        except Exception as err:
             _LOGGER.error("Error adding chunk %d to pending states: %s", chunk_number, err)
 
     async def _push_pending_states(self) -> None:
