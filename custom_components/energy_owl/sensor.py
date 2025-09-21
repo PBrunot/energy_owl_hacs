@@ -119,9 +119,8 @@ class OwlCMSensor(CoordinatorEntity, SensorEntity):
 class OwlHistoricalDataSensor(CoordinatorEntity, SensorEntity):
     """Sensor to track historical data collection progress."""
 
-    _attr_name = "CM160 - Historical Data Progress"
+    _attr_name = "CM160 - Historical Data Status"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_state_class = SensorStateClass.TOTAL
     _attr_should_poll = False
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
@@ -132,7 +131,7 @@ class OwlHistoricalDataSensor(CoordinatorEntity, SensorEntity):
         # Create unique ID based on port
         port = config_entry.data.get("port", "unknown")
         port_safe = str.replace(port, '/', '-').replace('\\', '-')
-        self._attr_unique_id = f"CM160-{port_safe}-historical-progress"
+        self._attr_unique_id = f"CM160-{port_safe}-historical-status"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -149,11 +148,24 @@ class OwlHistoricalDataSensor(CoordinatorEntity, SensorEntity):
         return self.coordinator.connected
 
     @property
-    def native_value(self) -> int | None:
-        """Return the number of historical records collected."""
+    def native_value(self) -> str | None:
+        """Return a user-friendly status message."""
         if not self.coordinator.data:
-            return None
-        return self.coordinator.data.get("historical_data_count", 0)
+            return "Disconnected"
+
+        connected = self.coordinator.data.get("connected", False)
+        if not connected:
+            return "Disconnected"
+
+        historical_complete = self.coordinator.data.get("historical_data_complete", False)
+        count = self.coordinator.data.get("historical_data_count", 0)
+
+        if historical_complete:
+            return "Complete"
+        elif count > 0:
+            return f"Syncing ({count} records)"
+        else:
+            return "Starting sync"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -161,7 +173,20 @@ class OwlHistoricalDataSensor(CoordinatorEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
 
-        return {
-            "historical_data_complete": self.coordinator.data.get("historical_data_complete", False),
-            "status": "Complete" if self.coordinator.data.get("historical_data_complete", False) else "In Progress",
+        count = self.coordinator.data.get("historical_data_count", 0)
+        complete = self.coordinator.data.get("historical_data_complete", False)
+
+        attrs = {
+            "historical_data_complete": complete,
+            "historical_records_count": count,
         }
+
+        # Add helpful context based on status
+        if complete:
+            attrs["message"] = f"Historical data sync completed with {count} records"
+        elif count > 0:
+            attrs["message"] = f"Syncing historical data... {count} records received"
+        else:
+            attrs["message"] = "Waiting for historical data from device"
+
+        return attrs
