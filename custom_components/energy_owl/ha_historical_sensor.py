@@ -5,6 +5,8 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from homeassistant.util import dt as dt_util
+
 from homeassistant_historical_sensor import (
     HistoricalSensor,
     HistoricalState,
@@ -50,6 +52,7 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
         self._acquisition_start_time: datetime | None = None
         self._acquisition_wait_time = 60  # Wait 1 minute before starting to push
         self._pending_historical_states: list[HistoricalState] = []
+        self._completion_notification_sent = False
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
@@ -137,8 +140,8 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
         super()._handle_coordinator_update()
 
         if self.coordinator.data and self.coordinator.data.get("connected", False):
-            # Start processing task if not already running
-            if self._push_task is None or self._push_task.done():
+            # Start processing task if not already running and not already complete
+            if not self._processing_complete and (self._push_task is None or self._push_task.done()):
                 self._push_task = self.hass.async_create_task(self._process_historical_data())
 
     async def _process_historical_data(self) -> None:
@@ -208,18 +211,20 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
                         if self._pending_historical_states:
                             await self._push_pending_states()
 
-                        # Create a persistent notification for completion
-                        self.hass.async_create_task(
-                            self.hass.services.async_call(
-                                "persistent_notification",
-                                "create",
-                                {
-                                    "title": "Energy OWL Historical Data Import Complete",
-                                    "message": f"Successfully imported {self._processed_count} historical records from CM160 device using HistoricalSensor in {self._chunks_pushed} chunks.",
-                                    "notification_id": f"energy_owl_historical_import_complete_{self._device_unique_id}",
-                                },
+                        # Create a persistent notification for completion (only once)
+                        if not self._completion_notification_sent:
+                            self._completion_notification_sent = True
+                            self.hass.async_create_task(
+                                self.hass.services.async_call(
+                                    "persistent_notification",
+                                    "create",
+                                    {
+                                        "title": "Energy OWL Historical Data Import Complete",
+                                        "message": f"Successfully imported {self._processed_count} historical records from CM160 device using HistoricalSensor in {self._chunks_pushed} chunks.",
+                                        "notification_id": f"energy_owl_historical_import_complete_{self._device_unique_id}",
+                                    },
+                                )
                             )
-                        )
 
                         _LOGGER.info(
                             "Historical data processing complete. Pushed %d chunks (%d records total)",
@@ -272,13 +277,35 @@ class OwlHistoricalCurrentSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, S
     async def _add_chunk_to_pending_states(self, chunk: list, chunk_number: int) -> None:
         """Add a chunk of historical data to pending states."""
         try:
-            for record in chunk:
+            _LOGGER.debug("Processing chunk %d with %d records", chunk_number, len(chunk))
+            for i, record in enumerate(chunk):
+                # Ensure timestamp has timezone info
+                timestamp = record["timestamp"]
+
+                # Convert to timezone-aware datetime in Home Assistant's timezone
+                if timestamp.tzinfo is None:
+                    # If naive datetime, assume it's in the local timezone
+                    timestamp = dt_util.as_local(timestamp)
+                else:
+                    # If already timezone-aware, convert to Home Assistant's timezone
+                    timestamp = dt_util.as_local(timestamp)
+
+                # Double-check that we have timezone info
+                if timestamp.tzinfo is None:
+                    _LOGGER.error("Failed to add timezone info to timestamp: %s", timestamp)
+                    # Fallback: use current timezone
+                    timestamp = timestamp.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
                 # Create HistoricalState objects for each record
                 historical_state = HistoricalState(
                     state=record["current"],
-                    dt=record["timestamp"]
+                    dt=timestamp
                 )
                 self._pending_historical_states.append(historical_state)
+
+                # Log first and last record of each chunk for debugging
+                if i == 0 or i == len(chunk) - 1:
+                    _LOGGER.debug("Record %d: current=%s, timestamp=%s (tzinfo=%s)", i, record["current"], timestamp, timestamp.tzinfo)
 
             _LOGGER.debug(
                 "Added chunk %d with %d records to pending states (total pending: %d)",
