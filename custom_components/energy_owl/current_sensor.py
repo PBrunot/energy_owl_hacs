@@ -47,14 +47,16 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
         self._chunks_pushed = 0
         self._last_push_time: datetime | None = None
         self._push_task: asyncio.Task | None = None
-        self._chunk_size = 100  # Small chunk size to be gentle on the database
+        self._chunk_size = 10  # Very small chunk size to reduce memory usage
         self._processing_complete = False
         self._acquisition_start_time: datetime | None = None
-        self._acquisition_wait_time = 60  # Wait 1 minute before starting to push
+        self._acquisition_wait_time = 120  # Wait 2 minutes before starting to push
         self._pending_historical_states: list[HistoricalState] = []
         self._completion_notification_sent = False
-        self._pushed_timestamps: set[datetime] = set()  # Track what we've already pushed
+        # Use smaller memory footprint for tracking - limit to recent timestamps only
+        self._pushed_timestamps: set[datetime] = set()  # Will be cleared periodically
         self._last_processed_timestamp: datetime | None = None
+        self._max_timestamps_cache = 1000  # Limit memory usage
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
@@ -144,10 +146,12 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
     async def async_update_historical(self) -> None:
         """Update historical states - required by HistoricalSensor."""
         # This is called by the HistoricalSensor framework
-        # We populate _attr_historical_states with pending data
+        # We populate _attr_historical_states with pending data (limit to save memory)
         if self._pending_historical_states:
-            self._attr_historical_states = self._pending_historical_states.copy()
-            _LOGGER.debug("Updated historical states with %d pending states", len(self._pending_historical_states))
+            # Only copy what we need to avoid memory bloat
+            limited_states = self._pending_historical_states[:self._chunk_size]
+            self._attr_historical_states = limited_states
+            _LOGGER.debug("Updated historical states with %d pending states (limited for memory)", len(limited_states))
         else:
             self._attr_historical_states = []
 
@@ -285,8 +289,14 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
                     # Push states immediately after each chunk with smaller batches
                     await self._push_pending_states()
 
-                    # Aggressive delay to avoid overwhelming the database
-                    await asyncio.sleep(10)
+                    # More aggressive delay and memory cleanup
+                    await asyncio.sleep(15)
+
+                    # Force garbage collection periodically to free memory
+                    if self._chunks_pushed % 10 == 0:
+                        import gc
+                        gc.collect()
+                        _LOGGER.debug("Performed garbage collection after %d chunks", self._chunks_pushed)
 
                     # Update the entity state to reflect progress
                     self.async_write_ha_state()
@@ -298,8 +308,10 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
                         self._processed_count
                     )
                 else:
-                    # No chunk to process, wait longer
-                    await asyncio.sleep(15)
+                    # No chunk to process, wait longer and do memory cleanup
+                    import gc
+                    gc.collect()
+                    await asyncio.sleep(20)
 
         except Exception as err:
             _LOGGER.error("Error in historical data processing task: %s", err, exc_info=True)
@@ -330,8 +342,15 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
                     # Fallback: use current timezone
                     timestamp = timestamp.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
 
-                # Track this timestamp as processed
+                # Track this timestamp as processed (with memory limit)
                 self._pushed_timestamps.add(timestamp)
+
+                # Periodically clear old timestamps to prevent memory bloat
+                if len(self._pushed_timestamps) > self._max_timestamps_cache:
+                    # Keep only the most recent timestamps
+                    recent_timestamps = sorted(list(self._pushed_timestamps))[-self._max_timestamps_cache//2:]
+                    self._pushed_timestamps = set(recent_timestamps)
+                    _LOGGER.debug("Cleared old timestamps cache, keeping %d recent entries", len(self._pushed_timestamps))
 
                 # Create HistoricalState objects for each record
                 historical_state = HistoricalState(
@@ -359,9 +378,15 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
         if not self._pending_historical_states:
             return
 
+        # Limit the number of states we try to push at once to save memory
+        states_to_push = self._pending_historical_states[:self._chunk_size]
+        if len(self._pending_historical_states) > self._chunk_size:
+            _LOGGER.debug("Limiting push to %d states (out of %d pending) to save memory",
+                         len(states_to_push), len(self._pending_historical_states))
+
         try:
-            # Update the historical states attribute
-            await self.async_update_historical()
+            # Update the historical states attribute with limited states
+            self._attr_historical_states = states_to_push.copy()
 
             # Call the HistoricalSensor method to write states to HA
             # Add retry logic for database concurrency issues
@@ -373,7 +398,7 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
                 except Exception as write_err:
                     if attempt < max_retries - 1:
                         _LOGGER.warning(
-                            "Failed to write historical states (attempt %d/%d): %s. Retrying in 2 seconds...",
+                            "Failed to write historical states (attempt %d/%d): %s. Retrying in 3 seconds...",
                             attempt + 1,
                             max_retries,
                             write_err
@@ -384,14 +409,14 @@ class OwlCMSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
 
             _LOGGER.info(
                 "Successfully pushed %d historical states to CM160 Current sensor",
-                len(self._pending_historical_states)
+                len(states_to_push)
             )
 
-            # Clear pending states after successful push
-            self._pending_historical_states.clear()
+            # Remove only the pushed states to save memory
+            self._pending_historical_states = self._pending_historical_states[len(states_to_push):]
 
         except Exception as err:
-            _LOGGER.error("Error pushing %d pending states to HA: %s", len(self._pending_historical_states), err)
+            _LOGGER.error("Error pushing %d pending states to HA: %s", len(states_to_push), err)
             # Don't clear pending states on error so we can retry later
 
     async def async_will_remove_from_hass(self) -> None:
