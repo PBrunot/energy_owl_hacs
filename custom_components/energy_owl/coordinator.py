@@ -56,6 +56,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._auto_recovery_timeout = 300  # 5 minutes
         self._recovery_attempts = 0
         self._max_recovery_attempts = 3
+        self._historical_data_pushers: list = []  # Track registered pushers
+        self._all_pushers_complete = False
 
         super().__init__(
             hass,
@@ -325,9 +327,13 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(
                     "Historical data sync is considered complete. Acknowledging to transition to real-time."
                 )
-                await self._acknowledge_historical_sync_completion()
+                # Don't acknowledge to device yet - wait for pushers to complete
                 self._historical_data_complete = True
                 self._fire_completion_event()
+                _LOGGER.info(
+                    "Historical data collection complete. Waiting for %d pushers to finish processing before acknowledging to device.",
+                    len(self._historical_data_pushers)
+                )
 
             return new_records
 
@@ -448,6 +454,46 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                         "notification_id": "energy_owl_recovery_failed",
                     },
                 )
+
+    def register_historical_pusher(self, pusher) -> None:
+        """Register a historical data pusher."""
+        if pusher not in self._historical_data_pushers:
+            self._historical_data_pushers.append(pusher)
+            _LOGGER.debug("Registered historical data pusher. Total pushers: %d", len(self._historical_data_pushers))
+
+    def unregister_historical_pusher(self, pusher) -> None:
+        """Unregister a historical data pusher."""
+        if pusher in self._historical_data_pushers:
+            self._historical_data_pushers.remove(pusher)
+            _LOGGER.debug("Unregistered historical data pusher. Total pushers: %d", len(self._historical_data_pushers))
+
+    async def notify_pusher_complete(self, pusher) -> None:
+        """Notify that a pusher has completed processing."""
+        _LOGGER.info("Pusher completed processing historical data.")
+
+        # Check if all pushers are complete
+        all_complete = True
+        for registered_pusher in self._historical_data_pushers:
+            if hasattr(registered_pusher, 'is_processing_complete'):
+                if not registered_pusher.is_processing_complete():
+                    all_complete = False
+                    break
+
+        if all_complete and not self._all_pushers_complete:
+            self._all_pushers_complete = True
+            _LOGGER.info("All historical data pushers have completed. Now acknowledging to device.")
+            await self._acknowledge_historical_sync_completion()
+
+            # Send notification about completion
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "Energy OWL Historical Processing Complete",
+                    "message": "All historical data has been processed and pushed to Home Assistant. Device will now switch to real-time mode.",
+                    "notification_id": "energy_owl_processing_complete",
+                },
+            )
 
     @property
     def connected(self) -> bool:

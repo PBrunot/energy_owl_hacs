@@ -35,8 +35,12 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
         self._current_status = "Waiting for connection"
         self._progress_percentage = 0
         self._acquisition_start_time: datetime | None = None
-        self._acquisition_wait_time = 180  # Wait 3 minutes before starting to push
+        self._acquisition_wait_time = 60  # Wait 1 minute before starting to push
         self._historical_current_sensor = historical_current_sensor
+        self._processing_complete = False
+
+        # Register with coordinator
+        self.coordinator.register_historical_pusher(self)
 
     @property
     def available(self) -> bool:
@@ -122,6 +126,10 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
 
         return attrs
 
+    def is_processing_complete(self) -> bool:
+        """Return True if processing is complete."""
+        return self._processing_complete
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
@@ -157,13 +165,21 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
                 # Check if we should wait for acquisition to complete
                 if self._acquisition_start_time:
                     elapsed = (datetime.now() - self._acquisition_start_time).total_seconds()
-                    if elapsed < self._acquisition_wait_time:
+                    historical_complete = self.coordinator.data.get("historical_data_complete", False)
+
+                    # Skip wait if historical data collection is already complete
+                    if not historical_complete and elapsed < self._acquisition_wait_time:
                         # Still in wait period, update status and continue waiting
                         remaining = self._acquisition_wait_time - elapsed
                         self._current_status = f"⏳ Waiting for acquisition to complete ({remaining:.0f}s remaining)"
                         self.async_write_ha_state()
                         await asyncio.sleep(5)
                         continue
+                    elif historical_complete and self._chunks_pushed == 0:
+                        # Historical data complete - start processing immediately
+                        _LOGGER.info("Historical data collection completed. Starting processing immediately.")
+                        self._current_status = "🔄 Ready to start processing"
+                        self.async_write_ha_state()
                     elif self._chunks_pushed == 0:  # First time past wait period
                         # Send notification now that we're ready to start processing
                         estimated_chunks = (len(historical_data) + self._chunk_size - 1) // self._chunk_size
@@ -211,6 +227,10 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
                             self._chunks_pushed,
                             self._processed_count
                         )
+
+                        # Mark processing as complete and notify coordinator
+                        self._processing_complete = True
+                        await self.coordinator.notify_pusher_complete(self)
 
                         # Final state update
                         self.async_write_ha_state()
@@ -307,6 +327,9 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
 
     async def async_will_remove_from_hass(self) -> None:
         """Cancel the processing task when entity is removed."""
+        # Unregister from coordinator
+        self.coordinator.unregister_historical_pusher(self)
+
         if self._push_task and not self._push_task.done():
             self._push_task.cancel()
             try:
