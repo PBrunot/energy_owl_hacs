@@ -1,7 +1,7 @@
 {
   "domain": "energy_owl",
   "name": "Energy Owl CM160 Serial port integration",
-  "version": "0.6.15",
+  "version": "0.6.16",
   "codeowners": ["@PBrunot"],
   "config_flow": true,
   "documentation": "https://github.com/PBrunot/energy_owl_hacs",
