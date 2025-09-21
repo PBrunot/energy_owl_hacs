@@ -74,6 +74,12 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._adaptive_delay_multiplier = 1.0
         self._import_suspended = False
         self._max_consecutive_errors = 10  # Suspend import after 10 consecutive database errors
+        
+        # Record skipping statistics
+        self._total_skipped_records = 0
+        self._skipped_invalid_data = 0
+        self._skipped_database_errors = 0
+        self._skipped_duplicates = 0
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
@@ -161,6 +167,10 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                 "import_complete": self._processing_complete,
                 "import_suspended": self._import_suspended,
                 "last_import_time": self._last_push_time.isoformat() if self._last_push_time else None,
+                "total_skipped_records": self._skipped_duplicates + self._skipped_invalid_data + self._skipped_database_errors,
+                "skipped_duplicates": self._skipped_duplicates,
+                "skipped_invalid_data": self._skipped_invalid_data,
+                "skipped_database_errors": self._skipped_database_errors,
             })
 
             # Only show detailed progress during active processing
@@ -460,6 +470,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                 # Skip if we've already processed this timestamp
                 if timestamp in self._pushed_timestamps:
                     skipped_count += 1
+                    self._skipped_duplicates += 1
                     continue
                 
                 # Check if this timestamp already exists in the database
@@ -476,6 +487,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                 
                 if timestamp_exists:
                     skipped_count += 1
+                    self._skipped_duplicates += 1
                     _LOGGER.debug("Skipping existing state at %s with value %s", timestamp, record["current"])
                     continue
 
@@ -503,12 +515,36 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     self._pushed_timestamps = set(recent_timestamps)
                     _LOGGER.debug("Cleared old timestamps cache, keeping %d recent entries", len(self._pushed_timestamps))
 
-                # Create HistoricalState objects for each record
-                historical_state = HistoricalState(
-                    state=record["current"],
-                    dt=timestamp
-                )
-                self._pending_historical_states.append(historical_state)
+                # Validate record data before creating HistoricalState
+                try:
+                    # Validate current value
+                    current_value = record["current"]
+                    if current_value is None:
+                        _LOGGER.debug("Skipping record with None current value at %s", timestamp)
+                        skipped_count += 1
+                        self._skipped_invalid_data += 1
+                        continue
+                    
+                    # Ensure current is a valid number
+                    current_float = float(current_value)
+                    if not (-1000 <= current_float <= 1000):  # Reasonable bounds check
+                        _LOGGER.warning("Skipping record with invalid current value %s at %s", current_value, timestamp)
+                        skipped_count += 1
+                        self._skipped_invalid_data += 1
+                        continue
+                    
+                    # Create HistoricalState objects for each record
+                    historical_state = HistoricalState(
+                        state=current_float,
+                        dt=timestamp
+                    )
+                    self._pending_historical_states.append(historical_state)
+                    
+                except (ValueError, TypeError, Exception) as record_err:
+                    _LOGGER.warning("Skipping invalid record at %s due to error: %s", timestamp, record_err)
+                    skipped_count += 1
+                    self._skipped_invalid_data += 1
+                    continue
 
                 # Log first and last record of each chunk for debugging
                 if i == 0 or i == len(chunk) - 1:
@@ -527,7 +563,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             if skipped_count > 0:
                 _LOGGER.info("Skipped %d existing records in chunk %d to avoid duplicates", skipped_count, chunk_number)
 
-        except Exception as err:
+        except Exception as err:in 
             _LOGGER.error("Error adding chunk %d to pending states: %s", chunk_number, err)
 
     async def _push_pending_states(self) -> None:
@@ -636,7 +672,15 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                             )
                             await asyncio.sleep(delay)
                         else:
-                            raise write_err
+                            # Log error and skip this problematic state to prevent blocking
+                            _LOGGER.error(
+                                "Failed to write historical state after %d attempts: %s. Skipping to prevent blocking import.",
+                                max_retries,
+                                write_err
+                            )
+                            # Track database error and skip this state to continue
+                            self._skipped_database_errors += 1
+                            break
 
             _LOGGER.debug(
                 "Successfully pushed 1 historical state to Historical Current Data sensor (%d remaining)",
