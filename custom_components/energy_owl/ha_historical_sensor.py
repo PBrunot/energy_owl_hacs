@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Any
 
 from homeassistant.util import dt as dt_util
+from homeassistant.components import recorder
+from homeassistant.components.recorder import history
 
 from homeassistant_historical_sensor import (
     HistoricalSensor,
@@ -60,6 +62,11 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._pushed_timestamps: set[datetime] = set()  # Will be cleared periodically
         self._last_processed_timestamp: datetime | None = None
         self._max_timestamps_cache = 1000  # Limit memory usage
+        
+        # Database state checking
+        self._db_state_cache: dict[datetime, float] = {}  # Cache existing states
+        self._db_cache_last_check: datetime | None = None
+        self._db_cache_validity = 300  # Cache validity in seconds
         
         # Database stress monitoring
         self._consecutive_db_errors = 0
@@ -166,6 +173,58 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
     def is_processing_complete(self) -> bool:
         """Return True if processing is complete."""
         return self._processing_complete
+
+    async def _check_existing_states(self, start_time: datetime, end_time: datetime) -> dict[datetime, float]:
+        """Check what states already exist in the database for the given time range."""
+        try:
+            # Check if we need to refresh our cache
+            now = datetime.now()
+            if (self._db_cache_last_check is None or 
+                (now - self._db_cache_last_check).total_seconds() > self._db_cache_validity):
+                
+                # Query existing states from the database
+                if not recorder.get_instance(self.hass):
+                    _LOGGER.warning("Recorder not available - cannot check existing states")
+                    return {}
+                
+                entity_id = self.entity_id
+                if not entity_id:
+                    _LOGGER.warning("Entity ID not available - cannot check existing states")
+                    return {}
+                
+                # Query history for this entity in the time range
+                existing_states = await self.hass.async_add_executor_job(
+                    history.state_changes_during_period,
+                    self.hass,
+                    start_time,
+                    end_time,
+                    entity_id
+                )
+                
+                # Build cache from query results
+                self._db_state_cache.clear()
+                if entity_id in existing_states:
+                    for state in existing_states[entity_id]:
+                        if state.state and state.state != "unknown" and state.state != "unavailable":
+                            try:
+                                # Convert state to float and store with timestamp
+                                state_value = float(state.state)
+                                # Ensure timezone-aware timestamp
+                                state_time = state.last_changed
+                                if state_time.tzinfo is None:
+                                    state_time = dt_util.as_local(state_time)
+                                self._db_state_cache[state_time] = state_value
+                            except (ValueError, TypeError):
+                                continue
+                
+                self._db_cache_last_check = now
+                _LOGGER.debug("Refreshed database state cache with %d existing states", len(self._db_state_cache))
+            
+            return self._db_state_cache
+            
+        except Exception as err:
+            _LOGGER.error("Error checking existing database states: %s", err)
+            return {}
 
     async def async_update_historical(self) -> None:
         """Update historical states - required by HistoricalSensor."""
@@ -355,6 +414,11 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                         import gc
                         gc.collect()
                         _LOGGER.debug("Performed garbage collection after %d chunks", self._chunks_pushed)
+                    
+                    # Add longer pause every 1000 records to give database time to process
+                    if self._processed_count % 1000 == 0 and self._processed_count > 0:
+                        _LOGGER.info("Processed %d records - taking 5 second database break", self._processed_count)
+                        await asyncio.sleep(5)
 
                     # Update the entity state to reflect progress
                     self.async_write_ha_state()
@@ -378,12 +442,41 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         """Add a chunk of historical data to pending states."""
         try:
             _LOGGER.debug("Processing chunk %d with %d records", chunk_number, len(chunk))
+            
+            # Initialize counters
+            skipped_count = 0
+            existing_states = {}
+            
+            # Check existing states for this chunk's time range
+            if chunk:
+                chunk_start = min(record["timestamp"] for record in chunk)
+                chunk_end = max(record["timestamp"] for record in chunk)
+                existing_states = await self._check_existing_states(chunk_start, chunk_end)
+                
             for i, record in enumerate(chunk):
                 # Ensure timestamp has timezone info
                 timestamp = record["timestamp"]
 
                 # Skip if we've already processed this timestamp
                 if timestamp in self._pushed_timestamps:
+                    skipped_count += 1
+                    continue
+                
+                # Check if this timestamp already exists in the database
+                # Use a small tolerance (1 second) for timestamp matching
+                timestamp_exists = False
+                for existing_time, existing_value in existing_states.items():
+                    time_diff = abs((timestamp - existing_time).total_seconds())
+                    if time_diff <= 1.0:  # Within 1 second tolerance
+                        # Also check if the value is significantly different
+                        value_diff = abs(record["current"] - existing_value)
+                        if value_diff < 0.01:  # Less than 0.01A difference
+                            timestamp_exists = True
+                            break
+                
+                if timestamp_exists:
+                    skipped_count += 1
+                    _LOGGER.debug("Skipping existing state at %s with value %s", timestamp, record["current"])
                     continue
 
                 # Convert to timezone-aware datetime in Home Assistant's timezone
@@ -421,12 +514,18 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                 if i == 0 or i == len(chunk) - 1:
                     _LOGGER.debug("Record %d: current=%s, timestamp=%s (tzinfo=%s)", i, record["current"], timestamp, timestamp.tzinfo)
 
+            # Report processing results
+            added_count = len(chunk) - skipped_count
             _LOGGER.debug(
-                "Added chunk %d with %d records to pending states (total pending: %d)",
+                "Chunk %d: added %d records, skipped %d existing records (total pending: %d)",
                 chunk_number,
-                len(chunk),
+                added_count,
+                skipped_count,
                 len(self._pending_historical_states)
             )
+            
+            if skipped_count > 0:
+                _LOGGER.info("Skipped %d existing records in chunk %d to avoid duplicates", skipped_count, chunk_number)
 
         except Exception as err:
             _LOGGER.error("Error adding chunk %d to pending states: %s", chunk_number, err)
@@ -549,7 +648,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
 
             # Minimal delay after each single state write - rapid succession
             # Just enough time to prevent overwhelming the database
-            await asyncio.sleep(0.1)  # 100ms delay after each single state write
+            await asyncio.sleep(0.25)  # 100ms delay after each single state write
 
         except Exception as err:
             _LOGGER.error("Error pushing %d pending states to HA: %s", len(states_to_push), err)

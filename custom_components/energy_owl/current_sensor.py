@@ -10,6 +10,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent
+from homeassistant.core import callback
 from homeassistant.helpers.entity import DeviceInfo
 
 from .base_entity import OwlEntity
@@ -74,3 +75,14 @@ class OwlCMSensor(OwlEntity, SensorEntity):
                     attrs["status"] = "Waiting for real-time updates"
 
         return attrs
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        super()._handle_coordinator_update()
+        
+        # Explicitly write state to ensure it's recorded to database
+        # This ensures real-time current values appear in HA history
+        if self.coordinator.data and self.coordinator.data.get("current") is not None:
+            _LOGGER.debug("Current sensor updating with new value: %s A", self.coordinator.data.get("current"))
+            self.async_write_ha_state()
