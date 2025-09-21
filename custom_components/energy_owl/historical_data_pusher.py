@@ -23,7 +23,7 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
     _attr_name = "CM160 - Historical Data Pusher"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry, historical_current_sensor=None) -> None:
         """Initialize the historical data pusher."""
         super().__init__(coordinator, config_entry)
         self._attr_unique_id = f"{self._device_unique_id}-historical-pusher"
@@ -36,6 +36,7 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
         self._progress_percentage = 0
         self._acquisition_start_time: datetime | None = None
         self._acquisition_wait_time = 180  # Wait 3 minutes before starting to push
+        self._historical_current_sensor = historical_current_sensor
 
     @property
     def available(self) -> bool:
@@ -275,8 +276,8 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
                 }
             )
 
-            # Also create individual state history entries via recorder
-            for record in chunk:
+            # Update historical current sensor with each record for HA history
+            for i, record in enumerate(chunk):
                 # Fire individual events that can be captured by statistics/recorder
                 self.hass.bus.fire(
                     f"{DOMAIN}_historical_data_point",
@@ -288,6 +289,18 @@ class OwlHistoricalDataPusher(OwlEntity, SensorEntity):
                         "chunk_number": chunk_number,
                     }
                 )
+
+                # Update the historical current sensor for each record
+                if self._historical_current_sensor:
+                    self._historical_current_sensor.update_historical_record(
+                        record["current"],
+                        record["timestamp"].isoformat(),
+                        chunk_number
+                    )
+
+                # Small delay between records to avoid overwhelming HA
+                if i % 50 == 0:  # Every 50 records
+                    await asyncio.sleep(0.1)
 
         except Exception as err:
             _LOGGER.error("Error pushing chunk %d to HA: %s", chunk_number, err)

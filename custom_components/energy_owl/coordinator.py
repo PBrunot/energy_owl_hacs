@@ -51,6 +51,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._historical_data_count = 0
         self._last_historical_check = 0
         self._last_new_historical_record_time: float | None = None
+        self._historical_completion_time: float | None = None
+        self._auto_recovery_enabled = True
+        self._auto_recovery_timeout = 300  # 5 minutes
+        self._recovery_attempts = 0
+        self._max_recovery_attempts = 3
 
         super().__init__(
             hass,
@@ -128,13 +133,36 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     self._collector.get_current
                 )
 
-                # Add detailed logging for real-time mode issues
+                # Add detailed logging for real-time mode issues and check for auto-recovery
                 if current is None and self._historical_data_complete:
-                    _LOGGER.warning(
-                        "Historical data complete but still no real-time reading after %d updates. "
-                        "Device may not have transitioned to real-time mode properly.",
-                        self._total_updates
-                    )
+                    if self._historical_completion_time is None:
+                        self._historical_completion_time = time.monotonic()
+                        _LOGGER.info("Historical data completed. Starting real-time mode timer for automatic recovery.")
+
+                    # Check if we need automatic recovery
+                    elapsed_since_completion = time.monotonic() - self._historical_completion_time
+                    if (self._auto_recovery_enabled and
+                        elapsed_since_completion > self._auto_recovery_timeout and
+                        self._recovery_attempts < self._max_recovery_attempts):
+
+                        _LOGGER.warning(
+                            "No real-time data for %.1f minutes after historical completion. "
+                            "Attempting automatic recovery (attempt %d/%d).",
+                            elapsed_since_completion / 60,
+                            self._recovery_attempts + 1,
+                            self._max_recovery_attempts
+                        )
+
+                        await self._attempt_automatic_recovery()
+                        return self.data  # Return existing data to avoid update failure
+
+                    elif elapsed_since_completion > 60:  # Log warning after 1 minute
+                        _LOGGER.warning(
+                            "Historical data complete but still no real-time reading after %d updates "
+                            "(%.1f minutes). Device may not have transitioned to real-time mode properly.",
+                            self._total_updates,
+                            elapsed_since_completion / 60
+                        )
 
                 _LOGGER.debug("Got current reading: %s", current)
 
@@ -146,6 +174,26 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     )
                     await self._acknowledge_historical_sync_completion()
                     self._historical_data_complete = True
+
+                # Reset recovery state if we got real-time data
+                if current is not None and self._historical_data_complete:
+                    if self._recovery_attempts > 0:
+                        _LOGGER.info("Real-time data restored. Resetting automatic recovery state.")
+                        # Send success notification if we had attempted recovery
+                        await self.hass.services.async_call(
+                            "persistent_notification",
+                            "create",
+                            {
+                                "title": "Energy OWL Recovery Success",
+                                "message": "Real-time data has been restored successfully. Device is now operating normally.",
+                                "notification_id": "energy_owl_recovery_success",
+                            },
+                        )
+
+                    # Reset recovery state
+                    self._recovery_attempts = 0
+                    self._auto_recovery_enabled = True
+                    self._historical_completion_time = None
 
                 # Always get latest debug info from the collector
                 if self._collector and hasattr(self._collector, "get_debug_info"):
@@ -239,6 +287,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 if self._last_new_historical_record_time is None:
                     _LOGGER.debug("Started historical data timeout timer.")
                 self._last_new_historical_record_time = time.monotonic()
+            elif new_count == self._last_historical_check and new_count > 0:
+                # Data count stable - start timeout if not already started
+                if self._last_new_historical_record_time is None:
+                    _LOGGER.info("Historical data count stable at %d records. Starting completion timeout.", new_count)
+                    self._last_new_historical_record_time = time.monotonic()
 
             self._historical_data_count = new_count
 
@@ -248,10 +301,12 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             )
             if complete_from_library:
                 _LOGGER.info("Library reports historical data is complete. Total records: %d", self._historical_data_count)
+            else:
+                _LOGGER.debug("Library reports historical data is NOT complete yet. Records: %d", self._historical_data_count)
 
             # 3. Check for completion using our own coordinator-level timeout
-            # Increase timeout for historical data - CM160 may send data in batches with gaps
-            HISTORICAL_DATA_TIMEOUT = self.update_interval.total_seconds() * 10  # 5 minutes instead of 1 minute
+            # Use reasonable timeout - if no new data for 2 minutes, assume complete
+            HISTORICAL_DATA_TIMEOUT = 120  # 2 minutes timeout
             complete_from_timeout = False
             if self._last_new_historical_record_time is not None:
                 elapsed = time.monotonic() - self._last_new_historical_record_time
@@ -322,6 +377,77 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Acknowledged historical data completion to device. Device should now switch to real-time mode.")
         except Exception as err:
             _LOGGER.warning("Error acknowledging historical data completion: %s", err, exc_info=True)
+
+    async def _attempt_automatic_recovery(self) -> None:
+        """Attempt automatic recovery when device is stuck."""
+        self._recovery_attempts += 1
+
+        try:
+            _LOGGER.info("Starting automatic recovery attempt %d/%d", self._recovery_attempts, self._max_recovery_attempts)
+
+            # Create a persistent notification about the recovery attempt
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "Energy OWL Automatic Recovery",
+                    "message": f"CM160 device appears stuck. Attempting automatic recovery (attempt {self._recovery_attempts}/{self._max_recovery_attempts}).",
+                    "notification_id": f"energy_owl_auto_recovery_{self._recovery_attempts}",
+                },
+            )
+
+            # Step 1: Disconnect current connection
+            _LOGGER.info("Disconnecting from device for recovery...")
+            await self.async_disconnect()
+
+            # Step 2: Wait a moment
+            await asyncio.sleep(2)
+
+            # Step 3: Reset state variables
+            self._connected = False
+            self._historical_data_complete = False
+            self._historical_completion_time = None
+            self._last_error = None
+
+            # Step 4: Reconnect
+            _LOGGER.info("Reconnecting to device...")
+            await self._async_connect()
+
+            # Step 5: Send success notification
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "Energy OWL Recovery Complete",
+                    "message": f"Automatic recovery completed. Device reconnected and should resume normal operation.",
+                    "notification_id": f"energy_owl_recovery_complete_{self._recovery_attempts}",
+                },
+            )
+
+            _LOGGER.info("Automatic recovery attempt %d completed successfully", self._recovery_attempts)
+
+        except Exception as err:
+            _LOGGER.error("Automatic recovery attempt %d failed: %s", self._recovery_attempts, err, exc_info=True)
+
+            # Disable auto-recovery if we've reached max attempts
+            if self._recovery_attempts >= self._max_recovery_attempts:
+                self._auto_recovery_enabled = False
+                _LOGGER.warning(
+                    "Maximum recovery attempts (%d) reached. Disabling automatic recovery. "
+                    "Manual intervention may be required.",
+                    self._max_recovery_attempts
+                )
+
+                # Send final notification
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": "Energy OWL Recovery Failed",
+                        "message": f"Automatic recovery failed after {self._max_recovery_attempts} attempts. Manual intervention required. Try using the 'force_reconnect' service or physically reset the CM160 device.",
+                        "notification_id": "energy_owl_recovery_failed",
+                    },
+                )
 
     @property
     def connected(self) -> bool:
