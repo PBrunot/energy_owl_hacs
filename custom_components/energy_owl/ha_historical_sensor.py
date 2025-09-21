@@ -434,6 +434,35 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             return
 
         try:
+            # Skip if we've already processed this timestamp
+            if timestamp in self._pushed_timestamps:
+                _LOGGER.debug("Skipping duplicate real-time timestamp: %s", timestamp)
+                return
+
+            # Ensure timestamp has timezone info (same logic as historical processing)
+            if timestamp.tzinfo is None:
+                # If naive datetime, assume it's in the local timezone
+                timestamp = dt_util.as_local(timestamp)
+            else:
+                # If already timezone-aware, convert to Home Assistant's timezone
+                timestamp = dt_util.as_local(timestamp)
+
+            # Double-check that we have timezone info
+            if timestamp.tzinfo is None:
+                _LOGGER.error("Failed to add timezone info to real-time timestamp: %s", timestamp)
+                # Fallback: use current timezone
+                timestamp = timestamp.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+            # Track this timestamp as processed (with memory limit)
+            self._pushed_timestamps.add(timestamp)
+
+            # Periodically clear old timestamps to prevent memory bloat
+            if len(self._pushed_timestamps) > self._max_timestamps_cache:
+                # Keep only the most recent timestamps
+                recent_timestamps = sorted(list(self._pushed_timestamps))[-self._max_timestamps_cache//2:]
+                self._pushed_timestamps = set(recent_timestamps)
+                _LOGGER.debug("Cleared old timestamps cache, keeping %d recent entries", len(self._pushed_timestamps))
+
             # Create a HistoricalState for the real-time data
             historical_state = HistoricalState(
                 state=current,
