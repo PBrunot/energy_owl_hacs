@@ -324,15 +324,15 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                 historical_data.sort(key=lambda x: x["timestamp"], reverse=True)
 
                 # Filter out data we've already processed to avoid duplicates
-                # Since we track the newest processed timestamp, exclude all records older than or equal to it
+                # Since we process newest-first, track the oldest processed timestamp and exclude older records
                 if self._last_processed_timestamp:
                     original_count = len(historical_data)
                     historical_data = [
                         record for record in historical_data
-                        if record["timestamp"] > self._last_processed_timestamp
+                        if record["timestamp"] >= self._last_processed_timestamp
                     ]
                     filtered_count = original_count - len(historical_data)
-                    _LOGGER.debug("Filtered out %d already processed records, %d new records remain (newest processed: %s)", 
+                    _LOGGER.debug("Filtered out %d already processed records, %d new records remain (oldest processed: %s)", 
                                  filtered_count, len(historical_data), self._last_processed_timestamp)
 
                 # Process data from beginning (most recent first)
@@ -402,9 +402,9 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     self._chunks_pushed += 1
                     self._last_push_time = datetime.now()
 
-                    # Update the last processed timestamp to the newest in this chunk
-                    # (since we're processing newest first, the first item is the newest)
-                    self._last_processed_timestamp = chunk[0]["timestamp"]
+                    # Update the last processed timestamp to the oldest in this chunk
+                    # (since we're processing newest first, the last item is the oldest)
+                    self._last_processed_timestamp = chunk[-1]["timestamp"]
 
                     # Push states immediately after each chunk
                     await self._push_pending_states()
