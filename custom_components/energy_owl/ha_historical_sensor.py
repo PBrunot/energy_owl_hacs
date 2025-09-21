@@ -48,7 +48,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._chunks_pushed = 0
         self._last_push_time: datetime | None = None
         self._push_task: asyncio.Task | None = None
-        self._chunk_size = 500  # Bigger chunk size for faster processing
+        self._chunk_size = 100  # Chunk size for processing
         self._processing_complete = False
         self._acquisition_start_time: datetime | None = None
         self._acquisition_wait_time = 60  # Reduced wait time for faster processing
