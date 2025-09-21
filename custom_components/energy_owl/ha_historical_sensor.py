@@ -32,7 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
     """Historical data processor that pushes to the main current sensor stream."""
 
-    _attr_name = "CM160 - Historical Data Processor"
+    _attr_name = "Historical Current Data"
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -48,7 +48,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._chunks_pushed = 0
         self._last_push_time: datetime | None = None
         self._push_task: asyncio.Task | None = None
-        self._chunk_size = 100  # Chunk size for processing
+        self._chunk_size = 250  # Larger chunk size to reduce database writes
         self._processing_complete = False
         self._acquisition_start_time: datetime | None = None
         self._acquisition_wait_time = 60  # Reduced wait time for faster processing
@@ -58,6 +58,11 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._pushed_timestamps: set[datetime] = set()  # Will be cleared periodically
         self._last_processed_timestamp: datetime | None = None
         self._max_timestamps_cache = 1000  # Limit memory usage
+        
+        # Database stress monitoring
+        self._consecutive_db_errors = 0
+        self._last_db_error_time: datetime | None = None
+        self._adaptive_delay_multiplier = 1.0
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
@@ -105,47 +110,34 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             historical_complete = self.coordinator.data.get("historical_data_complete", False)
             connected = self.coordinator.data.get("connected", False)
 
-            # Add processing status
+            # Add simplified status for historical current data sensor
             if not connected:
-                processing_status = "Disconnected"
+                status = "Disconnected"
             elif self._processing_complete:
-                processing_status = f"Complete ({self._processed_count} records)"
+                status = f"Active - {self._processed_count} historical records imported"
             elif self._processed_count > 0:
                 progress = (self._processed_count / total_historical * 100) if total_historical > 0 else 0
-                processing_status = f"Processing {progress:.1f}% ({self._processed_count}/{total_historical})"
+                status = f"Importing historical data - {progress:.0f}% complete"
             elif historical_complete:
-                processing_status = "Ready to process"
+                status = "Ready to import historical data"
             elif total_historical > 0:
-                processing_status = f"Waiting ({total_historical} records)"
+                status = f"Waiting to import {total_historical} historical records"
             else:
-                processing_status = "Waiting for data"
+                status = "Waiting for historical data"
 
-            attrs["processing_status"] = processing_status
+            # Keep only essential attributes
+            attrs.update({
+                "status": status,
+                "historical_records_imported": self._processed_count,
+                "total_historical_records": total_historical,
+                "import_complete": self._processing_complete,
+                "last_import_time": self._last_push_time.isoformat() if self._last_push_time else None,
+            })
 
-            # Add historical processing information
-            if total_historical > 0:
-                progress_percentage = min(100, (self._processed_count / total_historical) * 100) if total_historical > 0 else 0
-
-                # Calculate acquisition wait info
-                acquisition_elapsed = 0
-                acquisition_remaining = 0
-                if self._acquisition_start_time:
-                    acquisition_elapsed = (datetime.now() - self._acquisition_start_time).total_seconds()
-                    acquisition_remaining = max(0, self._acquisition_wait_time - acquisition_elapsed)
-
-                attrs.update({
-                    "historical_progress_percentage": progress_percentage,
-                    "historical_chunks_pushed": self._chunks_pushed,
-                    "historical_processed_count": self._processed_count,
-                    "historical_total_count": total_historical,
-                    "historical_remaining_records": max(0, total_historical - self._processed_count),
-                    "historical_last_push_time": self._last_push_time.isoformat() if self._last_push_time else None,
-                    "historical_processing_complete": self._processing_complete,
-                    "historical_is_processing": self._push_task is not None and not self._push_task.done(),
-                    "acquisition_elapsed_seconds": acquisition_elapsed,
-                    "acquisition_remaining_seconds": acquisition_remaining,
-                    "pending_states_count": len(self._pending_historical_states),
-                })
+            # Only show detailed progress during active processing
+            if not self._processing_complete and self._processed_count > 0:
+                progress = (self._processed_count / total_historical * 100) if total_historical > 0 else 0
+                attrs["import_progress_percentage"] = round(progress, 1)
 
         return attrs
 
@@ -275,6 +267,19 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                         self._processing_complete = True
                         await self.coordinator.notify_pusher_complete(self)
 
+                        # Send notification that real-time data will now be written to database
+                        self.hass.async_create_task(
+                            self.hass.services.async_call(
+                                "persistent_notification",
+                                "create",
+                                {
+                                    "title": "Energy OWL Real-time Mode Enabled",
+                                    "message": "Historical data processing complete. Real-time current readings are now being written to the database and will appear in historical graphs.",
+                                    "notification_id": f"energy_owl_realtime_enabled_{self._device_unique_id}",
+                                },
+                            )
+                        )
+
                         # Final state update
                         self.async_write_ha_state()
                         break
@@ -296,14 +301,24 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     # (since we're processing newest first, the last item is the oldest)
                     self._last_processed_timestamp = chunk[-1]["timestamp"]
 
-                    # Push states immediately after each chunk with smaller batches
+                    # Push states immediately after each chunk
                     await self._push_pending_states()
 
-                    # Faster processing with reduced delays
-                    await asyncio.sleep(5)
+                    # Adaptive delay based on database stress levels
+                    base_delay = 30
+                    adaptive_delay = int(base_delay * self._adaptive_delay_multiplier)
+                    
+                    if self._adaptive_delay_multiplier > 1.0:
+                        _LOGGER.info(
+                            "Using adaptive delay of %d seconds (%.1fx multiplier) due to database stress",
+                            adaptive_delay,
+                            self._adaptive_delay_multiplier
+                        )
+                    
+                    await asyncio.sleep(adaptive_delay)
 
-                    # Force garbage collection periodically to free memory
-                    if self._chunks_pushed % 10 == 0:
+                    # Force garbage collection less frequently to reduce system stress
+                    if self._chunks_pushed % 20 == 0:
                         import gc
                         gc.collect()
                         _LOGGER.debug("Performed garbage collection after %d chunks", self._chunks_pushed)
@@ -388,10 +403,12 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         if not self._pending_historical_states:
             return
 
-        # Limit the number of states we try to push at once to save memory
-        states_to_push = self._pending_historical_states[:self._chunk_size]
-        if len(self._pending_historical_states) > self._chunk_size:
-            _LOGGER.debug("Limiting push to %d states (out of %d pending) to save memory",
+        # Limit the number of states we try to push at once to reduce database load
+        # Use very small batches for database writes to prevent overwhelming the recorder
+        batch_size = min(self._chunk_size, 10)  # Maximum 10 states per database write
+        states_to_push = self._pending_historical_states[:batch_size]
+        if len(self._pending_historical_states) > batch_size:
+            _LOGGER.debug("Limiting push to %d states (out of %d pending) to reduce database load",
                          len(states_to_push), len(self._pending_historical_states))
 
         try:
@@ -400,30 +417,79 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
 
             # Call the HistoricalSensor method to write states to HA
             # Add retry logic for database concurrency issues
-            max_retries = 3
+            max_retries = 5
             for attempt in range(max_retries):
                 try:
                     await self.async_write_ha_historical_states()
+                    # Reset error counters on successful write
+                    self._consecutive_db_errors = 0
+                    # Gradually reduce adaptive delay multiplier on success
+                    if self._adaptive_delay_multiplier > 1.0:
+                        self._adaptive_delay_multiplier = max(1.0, self._adaptive_delay_multiplier * 0.9)
                     break
                 except Exception as write_err:
-                    if attempt < max_retries - 1:
-                        _LOGGER.warning(
-                            "Failed to write historical states (attempt %d/%d): %s. Retrying in 3 seconds...",
-                            attempt + 1,
-                            max_retries,
-                            write_err
-                        )
-                        await asyncio.sleep(3)
+                    error_str = str(write_err)
+                    
+                    # Handle SQLAlchemy StaleDataError specifically
+                    if "StaleDataError" in error_str or "expected to update" in error_str:
+                        self._consecutive_db_errors += 1
+                        self._last_db_error_time = datetime.now()
+                        
+                        # Increase adaptive delay multiplier based on consecutive errors
+                        if self._consecutive_db_errors > 3:
+                            self._adaptive_delay_multiplier = min(5.0, self._adaptive_delay_multiplier * 1.5)
+                            _LOGGER.warning(
+                                "Database appears stressed (%d consecutive errors). Increasing delays by %.1fx",
+                                self._consecutive_db_errors,
+                                self._adaptive_delay_multiplier
+                            )
+                        
+                        if attempt < max_retries - 1:
+                            # Exponential backoff with adaptive multiplier for database concurrency issues
+                            base_delay = 5 * (2 ** attempt)  # 5, 10, 20, 40 seconds
+                            delay = int(base_delay * self._adaptive_delay_multiplier)
+                            _LOGGER.warning(
+                                "Database concurrency error (attempt %d/%d): %s. Retrying in %d seconds (adaptive delay: %.1fx)...",
+                                attempt + 1,
+                                max_retries,
+                                write_err,
+                                delay,
+                                self._adaptive_delay_multiplier
+                            )
+                            await asyncio.sleep(delay)
+                        else:
+                            _LOGGER.error(
+                                "Failed to write historical states after %d attempts due to database concurrency issues. Skipping batch to prevent blocking.",
+                                max_retries
+                            )
+                            # Don't raise the error - skip this batch to prevent blocking
+                            break
                     else:
-                        raise write_err
+                        # Other errors - shorter retry with exponential backoff
+                        if attempt < max_retries - 1:
+                            delay = 3 * (2 ** attempt)  # 3, 6, 12, 24 seconds
+                            _LOGGER.warning(
+                                "Failed to write historical states (attempt %d/%d): %s. Retrying in %d seconds...",
+                                attempt + 1,
+                                max_retries,
+                                write_err,
+                                delay
+                            )
+                            await asyncio.sleep(delay)
+                        else:
+                            raise write_err
 
             _LOGGER.info(
-                "Successfully pushed %d historical states to CM160 Current sensor",
+                "Successfully pushed %d historical states to Historical Current Data sensor",
                 len(states_to_push)
             )
 
             # Remove only the pushed states to save memory
             self._pending_historical_states = self._pending_historical_states[len(states_to_push):]
+
+            # Add additional delay after successful writes to give recorder time to process
+            # and prevent overwhelming the database with continuous writes
+            await asyncio.sleep(5)
 
         except Exception as err:
             _LOGGER.error("Error pushing %d pending states to HA: %s", len(states_to_push), err)
@@ -432,7 +498,10 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
     async def on_realtime_data(self, current: float, timestamp: datetime) -> None:
         """Handle real-time data events from the coordinator."""
         if not self._processing_complete:
-            # Still processing historical data, don't add real-time data yet
+            # Still processing historical data, don't add real-time data to database yet
+            # but update the entity state to show current readings
+            _LOGGER.debug("Received real-time data during historical processing: %s A", current)
+            self.async_write_ha_state()
             return
 
         try:

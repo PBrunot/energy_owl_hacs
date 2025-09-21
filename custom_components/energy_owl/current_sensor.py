@@ -22,7 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 class OwlCMSensor(OwlEntity, SensorEntity):
     """Representation of an OWL CM160 current sensor for real-time data only."""
 
-    _attr_name = "CM160 - Current"
+    _attr_name = "Current"
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT

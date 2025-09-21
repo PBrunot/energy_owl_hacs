@@ -13,7 +13,7 @@ from .coordinator import OwlDataUpdateCoordinator
 class OwlHistoricalDataSensor(OwlEntity, SensorEntity):
     """Sensor to track historical data collection progress."""
 
-    _attr_name = "CM160 - Historical Data Status"
+    _attr_name = "Historical Data Status"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:

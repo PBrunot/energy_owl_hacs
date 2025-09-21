@@ -21,7 +21,7 @@ class OwlEntity(CoordinatorEntity):
         self.config_entry = config_entry
         port = config_entry.data.get("port", "unknown")
         port_safe = str.replace(port, '/', '-').replace('\\', '-')
-        self._device_unique_id = f"CM160-{port_safe}"
+        self._device_unique_id = f"CM160-{port_safe}-v2"
 
     @property
     def device_info(self) -> DeviceInfo:
