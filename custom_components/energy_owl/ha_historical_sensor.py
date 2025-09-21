@@ -60,8 +60,12 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._completion_notification_sent = False
         # Use smaller memory footprint for tracking - limit to recent timestamps only
         self._pushed_timestamps: set[datetime] = set()  # Will be cleared periodically
-        self._last_processed_timestamp: datetime | None = None
+        self._last_successfully_imported_timestamp: datetime | None = None
         self._max_timestamps_cache = 1000  # Limit memory usage
+        
+        # Track timestamp range of acquired records to be uploaded
+        self._smallest_acquired_timestamp: datetime | None = None
+        self._biggest_acquired_timestamp: datetime | None = None
         
         # Database state checking
         self._db_state_cache: dict[datetime, float] = {}  # Cache existing states
@@ -167,6 +171,9 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                 "import_complete": self._processing_complete,
                 "import_suspended": self._import_suspended,
                 "last_import_time": self._last_push_time.isoformat() if self._last_push_time else None,
+                "last_imported_timestamp": self._last_successfully_imported_timestamp.isoformat() if self._last_successfully_imported_timestamp else None,
+                "smallest_acquired_timestamp": self._smallest_acquired_timestamp.isoformat() if self._smallest_acquired_timestamp else None,
+                "biggest_acquired_timestamp": self._biggest_acquired_timestamp.isoformat() if self._biggest_acquired_timestamp else None,
                 "total_skipped_records": self._skipped_duplicates + self._skipped_invalid_data + self._skipped_database_errors,
                 "skipped_duplicates": self._skipped_duplicates,
                 "skipped_invalid_data": self._skipped_invalid_data,
@@ -276,6 +283,12 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     await asyncio.sleep(5)  # Wait 5 seconds before retrying
                     continue
 
+                # Update timestamp range for all acquired records
+                if historical_data:
+                    all_timestamps = [record["timestamp"] for record in historical_data]
+                    self._smallest_acquired_timestamp = min(all_timestamps)
+                    self._biggest_acquired_timestamp = max(all_timestamps)
+
                 # Start acquisition timer on first data availability
                 if first_run and len(historical_data) > 0:
                     first_run = False
@@ -320,22 +333,18 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                             )
                         )
 
-                # Sort by timestamp (newest first to prioritize recent data)
-                historical_data.sort(key=lambda x: x["timestamp"], reverse=True)
-
-                # Filter out data we've already processed to avoid duplicates
-                # Since we process newest-first, track the oldest processed timestamp and exclude older records
-                if self._last_processed_timestamp:
+                # Filter out data we've already imported to avoid duplicates
+                if self._last_successfully_imported_timestamp:
                     original_count = len(historical_data)
                     historical_data = [
                         record for record in historical_data
-                        if record["timestamp"] >= self._last_processed_timestamp
+                        if record["timestamp"] > self._last_successfully_imported_timestamp
                     ]
                     filtered_count = original_count - len(historical_data)
-                    _LOGGER.debug("Filtered out %d already processed records, %d new records remain (oldest processed: %s)", 
-                                 filtered_count, len(historical_data), self._last_processed_timestamp)
+                    _LOGGER.debug("Filtered out %d already imported records, %d new records remain (last imported: %s)", 
+                                 filtered_count, len(historical_data), self._last_successfully_imported_timestamp)
 
-                # Process data from beginning (most recent first)
+                # Process data in chunks
                 start_idx = 0
                 end_idx = min(self._chunk_size, len(historical_data))
 
@@ -402,9 +411,14 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     self._chunks_pushed += 1
                     self._last_push_time = datetime.now()
 
-                    # Update the last processed timestamp to the oldest in this chunk
-                    # (since we're processing newest first, the last item is the oldest)
-                    self._last_processed_timestamp = chunk[-1]["timestamp"]
+                    # Update the last successfully imported timestamp to the latest in this chunk
+                    # Find the latest timestamp from this chunk that was successfully imported
+                    chunk_timestamps = [record["timestamp"] for record in chunk]
+                    if chunk_timestamps:
+                        latest_timestamp = max(chunk_timestamps)
+                        if (self._last_successfully_imported_timestamp is None or 
+                            latest_timestamp > self._last_successfully_imported_timestamp):
+                            self._last_successfully_imported_timestamp = latest_timestamp
 
                     # Push states immediately after each chunk
                     await self._push_pending_states()
