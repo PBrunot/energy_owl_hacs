@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from home_assistant_historical_sensor import (
+from homeassistant_historical_sensor import (
     HistoricalSensor,
     HistoricalState,
     PollUpdateMixin,
