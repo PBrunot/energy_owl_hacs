@@ -127,6 +127,12 @@ class OwlCMSensor(OwlEntity, SensorEntity):
             else:
                 attrs["status"] = "Waiting for real-time updates"
 
+        # Add low-level debug info from the collector if available
+        debug_info = self.coordinator.data.get("debug_info")
+        if debug_info and isinstance(debug_info, dict):
+            for key, value in debug_info.items():
+                attrs[f"collector_{key}"] = value
+
         return attrs
 
 

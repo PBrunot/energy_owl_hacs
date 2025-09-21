@@ -99,45 +99,51 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         for attempt in range(self.max_retries + 1):
             try:
                 self._total_updates += 1
+                current = None
+                debug_info = {}
 
-                # Phase 1: Process historical data transparently (if not complete)
+                # Phase 1: Process historical data until the sync is complete.
+                # During this phase, `current` will be None.
                 if not self._historical_data_complete:
                     await self._process_and_consume_historical_data()
 
-                # Phase 2: Get current reading and device state information
-                current = await self.hass.async_add_executor_job(
-                    self._collector.get_current
-                )
+                # Phase 2: Once historical sync is complete, get real-time current readings.
+                if self._historical_data_complete:
+                    current = await self.hass.async_add_executor_job(
+                        self._collector.get_current
+                    )
 
-                # Get additional owlsensor state information
-                device_state = await self._get_device_state_info()
+                # Always get latest debug info from the collector
+                if self._collector and hasattr(self._collector, "get_debug_info"):
+                    debug_info = await self.hass.async_add_executor_job(
+                        self._collector.get_debug_info
+                    )
 
                 self._last_error = None
                 self._connected = True
 
                 _LOGGER.debug(
-                    "Successfully retrieved current reading: %s A (attempt %d/%d) [Historical: %s]",
-                    current,
+                    "Successfully retrieved data. Current reading: %s (attempt %d/%d) [Historical: %s]",
+                    f"{current} A" if current is not None else "N/A",
                     attempt + 1,
                     self.max_retries + 1,
                     "Complete" if self._historical_data_complete else "Syncing"
                 )
 
                 return {
-                    "current": current,
-                    "connected": self._connected,
-                    "last_error": self._last_error,
-                    "error_count": self._error_count,
-                    "total_updates": self._total_updates,
-                    "historical_data_complete": self._historical_data_complete,
-                    "historical_data_count": self._historical_data_count,
-                    **device_state,  # Include owlsensor device state info
-                }
+                     "current": current,
+                     "connected": self._connected,
+                     "last_error": self._last_error,
+                     "error_count": self._error_count,
+                     "total_updates": self._total_updates,
+                     "historical_data_complete": self._historical_data_complete,
+                     "historical_data_count": self._historical_data_count,
+                     "debug_info": debug_info,
+                 }
 
             except Exception as err:
                 self._error_count += 1
                 self._last_error = str(err)
-
                 _LOGGER.warning(
                     "Failed to get data from OWL device (attempt %d/%d): %s",
                     attempt + 1,
@@ -170,32 +176,14 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     )
                     raise UpdateFailed(f"Failed to get data after {self.max_retries + 1} attempts: {err}") from err
 
-        # This should never be reached, but just in case
-        raise UpdateFailed("Unexpected error in data update")
+        # This should not be reached if the loop raises UpdateFailed, but as a fallback.
+        raise UpdateFailed("Unexpected error in data update loop")
 
     async def _process_and_consume_historical_data(self) -> None:
         """Process and consume historical data transparently, transitioning to real-time when complete."""
         if not self._collector:
             return
-
         try:
-            # Check if historical data collection is complete
-            complete = await self.hass.async_add_executor_job(
-                self._collector.is_historical_data_complete
-            )
-
-            if complete and not self._historical_data_complete:
-                self._historical_data_complete = True
-                _LOGGER.info("Historical data collection completed for device at %s - transitioning to real-time", self.port)
-
-                # Fire completion event
-                port_safe = self.port.replace('/', '-').replace('\\', '-')
-                self.hass.bus.fire(
-                    f"{DOMAIN}_historical_data_complete",
-                    {"device_port": self.port, "device_id": f"CM160-{port_safe}"}
-                )
-                return
-
             # Get available historical data
             historical_data = await self.hass.async_add_executor_job(
                 self._collector.get_historical_data
@@ -204,19 +192,38 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             new_count = len(historical_data)
             if new_count > self._last_historical_check:
                 new_records = historical_data[self._last_historical_check:]
-                consumed_count = len(new_records)
-
-                _LOGGER.debug("Processing and consuming %d new historical records", consumed_count)
-
-                # Process records (emit events for HA)
+                _LOGGER.debug("Processing %d new historical records", len(new_records))
                 await self._emit_historical_records(new_records)
-
-                # CRITICAL: Consume/acknowledge the processed records from device buffer
-                await self._consume_historical_records(consumed_count)
-
-                # Update tracking
                 self._last_historical_check = new_count
-                self._historical_data_count = new_count
+
+            # Update total count for the status sensor
+            self._historical_data_count = new_count
+
+            # Now, check if the device has finished sending all historical data
+            complete = await self.hass.async_add_executor_job(
+                self._collector.is_historical_data_complete
+            )
+
+            if complete and not self._historical_data_complete:
+                _LOGGER.info(
+                    "Historical data collection completed for device at %s. Acknowledging to transition to real-time.",
+                    self.port
+                )
+                # This call tells the device we have received all historical data
+                # and it can now switch to real-time mode.
+                await self._acknowledge_historical_sync_completion()
+
+                self._historical_data_complete = True
+
+                # Fire completion event
+                port_safe = self.port.replace('/', '-').replace('\\', '-')
+                self.hass.bus.fire(
+                    f"{DOMAIN}_historical_data_complete",
+                    {
+                        "device_port": self.port,
+                        "device_id": f"CM160-{port_safe}"
+                    }
+                )
 
         except Exception as err:
             _LOGGER.warning("Error processing historical data: %s", err)
@@ -239,54 +246,20 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             except Exception as err:
                 _LOGGER.warning("Error emitting historical record event: %s", err)
 
-    async def _consume_historical_records(self, count: int) -> None:
-        """Log historical records consumption without interfering with device state."""
-        if not self._collector or count <= 0:
+    async def _acknowledge_historical_sync_completion(self) -> None:
+        """Acknowledge historical data completion to the device to transition to real-time mode."""
+        if not self._collector:
             return
 
         try:
-            # BUGFIX: Do NOT call clear_historical_data() as it resets device state
-            # and causes infinite handshake loop. Let the device naturally complete
-            # its historical sync protocol instead of forcing a reset.
-            _LOGGER.debug("Acknowledged %d historical records (allowing natural device transition)", count)
-
+            # This library call sends the necessary command to the device to
+            # finalize the historical data sync and switch to real-time mode.
+            await self.hass.async_add_executor_job(
+                self._collector.clear_historical_data
+            )
+            _LOGGER.debug("Acknowledged historical data completion to device.")
         except Exception as err:
-            _LOGGER.warning("Error acknowledging historical records: %s", err)
-
-    async def _get_device_state_info(self) -> dict[str, Any]:
-        """Get owlsensor device state and protocol information."""
-        if not self._collector:
-            return {}
-
-        try:
-            # Safely get device state information from owlsensor
-            state_info = {}
-
-            # Get protocol state if available
-            if hasattr(self._collector, '_protocol_state'):
-                state_info["protocol_state"] = getattr(self._collector, '_protocol_state', 'unknown')
-
-            # Get connection state details
-            if hasattr(self._collector, '_connection_state'):
-                state_info["connection_state"] = getattr(self._collector, '_connection_state', 'unknown')
-
-            # Get last received message type if available
-            if hasattr(self._collector, '_last_message_type'):
-                state_info["last_message_type"] = getattr(self._collector, '_last_message_type', 'unknown')
-
-            # Get buffer status if available
-            if hasattr(self._collector, '_buffer_status'):
-                state_info["buffer_status"] = getattr(self._collector, '_buffer_status', 'unknown')
-
-            # Check if device is in sync mode
-            if hasattr(self._collector, '_sync_mode'):
-                state_info["sync_mode"] = getattr(self._collector, '_sync_mode', False)
-
-            return state_info
-
-        except Exception as err:
-            _LOGGER.debug("Error getting device state info: %s", err)
-            return {}
+            _LOGGER.warning("Error acknowledging historical data completion: %s", err)
 
     @property
     def connected(self) -> bool:
