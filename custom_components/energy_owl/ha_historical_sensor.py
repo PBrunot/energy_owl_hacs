@@ -477,13 +477,27 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                 # Use a small tolerance (1 second) for timestamp matching
                 timestamp_exists = False
                 for existing_time, existing_value in existing_states.items():
-                    time_diff = abs((timestamp - existing_time).total_seconds())
-                    if time_diff <= 1.0:  # Within 1 second tolerance
-                        # Also check if the value is significantly different
-                        value_diff = abs(record["current"] - existing_value)
-                        if value_diff < 0.01:  # Less than 0.01A difference
-                            timestamp_exists = True
-                            break
+                    try:
+                        # Ensure both timestamps are timezone-aware for comparison
+                        current_timestamp = timestamp
+                        existing_timestamp = existing_time
+                        
+                        # Make sure both have timezone info
+                        if current_timestamp.tzinfo is None:
+                            current_timestamp = dt_util.as_local(current_timestamp)
+                        if existing_timestamp.tzinfo is None:
+                            existing_timestamp = dt_util.as_local(existing_timestamp)
+                        
+                        time_diff = abs((current_timestamp - existing_timestamp).total_seconds())
+                        if time_diff <= 1.0:  # Within 1 second tolerance
+                            # Also check if the value is significantly different
+                            value_diff = abs(record["current"] - existing_value)
+                            if value_diff < 0.01:  # Less than 0.01A difference
+                                timestamp_exists = True
+                                break
+                    except (TypeError, AttributeError) as tz_err:
+                        _LOGGER.debug("Timezone comparison error for timestamps %s vs %s: %s", timestamp, existing_time, tz_err)
+                        continue
                 
                 if timestamp_exists:
                     skipped_count += 1
