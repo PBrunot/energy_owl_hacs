@@ -411,7 +411,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Step 3: Reset state variables
             self._connected = False
-            self._historical_data_complete = False
+            # Don't reset historical_data_complete - we want to maintain completion state
+            # and go directly to real-time mode after reconnection
             self._historical_completion_time = None
             self._last_error = None
 
