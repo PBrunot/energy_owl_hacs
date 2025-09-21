@@ -92,7 +92,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Failed to connect to device: {err}") from err
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from the device."""
+        """Unified data fetch method - handles both historical and real-time data transparently."""
         if not self._connected or self._collector is None:
             await self._async_connect()
 
@@ -100,10 +100,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 self._total_updates += 1
 
-                # Check for historical data updates
-                await self._check_historical_data()
+                # Phase 1: Process historical data transparently (if not complete)
+                if not self._historical_data_complete:
+                    await self._process_and_consume_historical_data()
 
-                # Get current reading
+                # Phase 2: Get current reading (always available for sensor)
                 current = await self.hass.async_add_executor_job(
                     self._collector.get_current
                 )
@@ -112,10 +113,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 self._connected = True
 
                 _LOGGER.debug(
-                    "Successfully retrieved current reading: %s A (attempt %d/%d)",
+                    "Successfully retrieved current reading: %s A (attempt %d/%d) [Historical: %s]",
                     current,
                     attempt + 1,
                     self.max_retries + 1,
+                    "Complete" if self._historical_data_complete else "Syncing"
                 )
 
                 return {
@@ -167,8 +169,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         # This should never be reached, but just in case
         raise UpdateFailed("Unexpected error in data update")
 
-    async def _check_historical_data(self) -> None:
-        """Check for new historical data and emit events."""
+    async def _process_and_consume_historical_data(self) -> None:
+        """Process and consume historical data transparently, transitioning to real-time when complete."""
         if not self._collector:
             return
 
@@ -180,16 +182,17 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
             if complete and not self._historical_data_complete:
                 self._historical_data_complete = True
-                _LOGGER.info("Historical data collection completed for device at %s", self.port)
+                _LOGGER.info("Historical data collection completed for device at %s - transitioning to real-time", self.port)
 
-                # Fire completion event with proper domain prefix
+                # Fire completion event
                 port_safe = self.port.replace('/', '-').replace('\\', '-')
                 self.hass.bus.fire(
                     f"{DOMAIN}_historical_data_complete",
                     {"device_port": self.port, "device_id": f"CM160-{port_safe}"}
                 )
+                return
 
-            # Check for new historical data
+            # Get available historical data
             historical_data = await self.hass.async_add_executor_job(
                 self._collector.get_historical_data
             )
@@ -197,19 +200,25 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             new_count = len(historical_data)
             if new_count > self._last_historical_check:
                 new_records = historical_data[self._last_historical_check:]
+                consumed_count = len(new_records)
+
+                _LOGGER.debug("Processing and consuming %d new historical records", consumed_count)
+
+                # Process records (emit events for HA)
+                await self._emit_historical_records(new_records)
+
+                # CRITICAL: Consume/acknowledge the processed records from device buffer
+                await self._consume_historical_records(consumed_count)
+
+                # Update tracking
                 self._last_historical_check = new_count
                 self._historical_data_count = new_count
 
-                # Fire event for new historical data
-                if new_records:
-                    _LOGGER.debug("Processing %d new historical records", len(new_records))
-                    await self._process_historical_records(new_records)
-
         except Exception as err:
-            _LOGGER.warning("Error checking historical data: %s", err)
+            _LOGGER.warning("Error processing historical data: %s", err)
 
-    async def _process_historical_records(self, records: list) -> None:
-        """Process new historical records and emit events."""
+    async def _emit_historical_records(self, records: list) -> None:
+        """Emit historical records as Home Assistant events."""
         for record in records:
             try:
                 # Fire event for each historical record with proper domain prefix
@@ -224,7 +233,23 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     }
                 )
             except Exception as err:
-                _LOGGER.warning("Error processing historical record: %s", err)
+                _LOGGER.warning("Error emitting historical record event: %s", err)
+
+    async def _consume_historical_records(self, count: int) -> None:
+        """Consume/acknowledge historical records from device buffer to allow transition to real-time."""
+        if not self._collector or count <= 0:
+            return
+
+        try:
+            # Use the library's method to consume/clear the processed historical data
+            # This is crucial for the device to know we've received the data and can transition to real-time
+            await self.hass.async_add_executor_job(
+                self._collector.clear_historical_data
+            )
+            _LOGGER.debug("Consumed %d historical records from device buffer", count)
+
+        except Exception as err:
+            _LOGGER.warning("Error consuming historical records: %s", err)
 
     @property
     def connected(self) -> bool:
