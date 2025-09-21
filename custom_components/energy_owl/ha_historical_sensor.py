@@ -63,6 +63,8 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._consecutive_db_errors = 0
         self._last_db_error_time: datetime | None = None
         self._adaptive_delay_multiplier = 1.0
+        self._import_suspended = False
+        self._max_consecutive_errors = 10  # Suspend import after 10 consecutive database errors
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
@@ -113,11 +115,15 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             # Add simplified status for historical current data sensor
             if not connected:
                 status = "Disconnected"
+            elif self._import_suspended:
+                status = f"Import suspended - {self._processed_count} records imported before database errors"
             elif self._processing_complete:
                 status = f"Active - {self._processed_count} historical records imported"
             elif self._processed_count > 0:
                 progress = (self._processed_count / total_historical * 100) if total_historical > 0 else 0
-                status = f"Importing historical data - {progress:.0f}% complete"
+                current_value = self.coordinator.data.get("current")
+                real_time_info = f" (showing real-time: {current_value:.1f}A)" if current_value is not None else ""
+                status = f"Importing historical data - {progress:.0f}% complete{real_time_info}"
             elif historical_complete:
                 status = "Ready to import historical data"
             elif total_historical > 0:
@@ -131,6 +137,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                 "historical_records_imported": self._processed_count,
                 "total_historical_records": total_historical,
                 "import_complete": self._processing_complete,
+                "import_suspended": self._import_suspended,
                 "last_import_time": self._last_push_time.isoformat() if self._last_push_time else None,
             })
 
@@ -161,6 +168,12 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         super()._handle_coordinator_update()
+        
+        # Always update state immediately when coordinator data changes
+        # This ensures real-time values are shown even during historical import
+        if self.coordinator.data and self.coordinator.data.get("current") is not None:
+            _LOGGER.debug("Historical Current Data sensor updating with coordinator data: %s A", 
+                         self.coordinator.data.get("current"))
 
         if self.coordinator.data and self.coordinator.data.get("connected", False):
             # Start processing task if not already running and not already complete
@@ -207,13 +220,16 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     elif self._chunks_pushed == 0:  # First time past wait period
                         # Send notification now that we're ready to start processing
                         estimated_chunks = (len(historical_data) + self._chunk_size - 1) // self._chunk_size
+                        estimated_batches = (len(historical_data) + 25 - 1) // 25  # Assuming 25 states per batch
+                        estimated_time_hours = (estimated_batches * 13) / 3600  # 10s + 3s = 13s per batch
+                        
                         self.hass.async_create_task(
                             self.hass.services.async_call(
                                 "persistent_notification",
                                 "create",
                                 {
                                     "title": "Energy OWL Historical Data Import Started",
-                                    "message": f"Starting import of {len(historical_data)} historical records to CM160 Current sensor. Estimated {estimated_chunks} chunks to process.",
+                                    "message": f"Starting import of {len(historical_data)} historical records. Estimated time: {estimated_time_hours:.1f} hours ({estimated_batches} batches of ~25 records each). Import will slow down automatically if database errors occur.",
                                     "notification_id": f"energy_owl_historical_import_started_{self._device_unique_id}",
                                 },
                             )
@@ -304,8 +320,9 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                     # Push states immediately after each chunk
                     await self._push_pending_states()
 
-                    # Adaptive delay based on database stress levels
-                    base_delay = 30
+                    # Moderate delay balanced for large dataset imports (40k+ records)
+                    # Conservative enough to prevent errors, fast enough to complete in reasonable time
+                    base_delay = 10  # 10 second base delay between chunks
                     adaptive_delay = int(base_delay * self._adaptive_delay_multiplier)
                     
                     if self._adaptive_delay_multiplier > 1.0:
@@ -402,10 +419,17 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         """Push pending historical states to Home Assistant."""
         if not self._pending_historical_states:
             return
+        
+        # Check if import has been suspended due to database errors
+        if self._import_suspended:
+            _LOGGER.debug("Historical import suspended - skipping database write")
+            return
 
         # Limit the number of states we try to push at once to reduce database load
-        # Use very small batches for database writes to prevent overwhelming the recorder
-        batch_size = min(self._chunk_size, 10)  # Maximum 10 states per database write
+        # Use moderate batch size - balance between speed and database safety for large imports
+        # Start with smaller batches, increase if no errors occur
+        base_batch_size = 25 if self._consecutive_db_errors == 0 else max(5, 25 - (self._consecutive_db_errors * 3))
+        batch_size = min(self._chunk_size, base_batch_size)
         states_to_push = self._pending_historical_states[:batch_size]
         if len(self._pending_historical_states) > batch_size:
             _LOGGER.debug("Limiting push to %d states (out of %d pending) to reduce database load",
@@ -442,6 +466,27 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
                                 "Database appears stressed (%d consecutive errors). Increasing delays by %.1fx",
                                 self._consecutive_db_errors,
                                 self._adaptive_delay_multiplier
+                            )
+                        
+                        # Suspend import if too many consecutive errors
+                        if self._consecutive_db_errors >= self._max_consecutive_errors and not self._import_suspended:
+                            self._import_suspended = True
+                            _LOGGER.error(
+                                "Too many consecutive database errors (%d). Suspending historical data import to protect Home Assistant database.",
+                                self._consecutive_db_errors
+                            )
+                            
+                            # Send notification about suspension
+                            self.hass.async_create_task(
+                                self.hass.services.async_call(
+                                    "persistent_notification",
+                                    "create",
+                                    {
+                                        "title": "Energy OWL Import Suspended",
+                                        "message": f"Historical data import has been suspended due to repeated database errors ({self._consecutive_db_errors} consecutive failures). The device will continue showing real-time data. Restart the integration to retry import.",
+                                        "notification_id": f"energy_owl_import_suspended_{self._device_unique_id}",
+                                    },
+                                )
                             )
                         
                         if attempt < max_retries - 1:
@@ -487,9 +532,9 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
             # Remove only the pushed states to save memory
             self._pending_historical_states = self._pending_historical_states[len(states_to_push):]
 
-            # Add additional delay after successful writes to give recorder time to process
-            # and prevent overwhelming the database with continuous writes
-            await asyncio.sleep(5)
+            # Moderate delay after successful writes - balanced for large imports
+            # Give recorder time to process without making imports take days
+            await asyncio.sleep(3)  # 3 second delay after each batch write
 
         except Exception as err:
             _LOGGER.error("Error pushing %d pending states to HA: %s", len(states_to_push), err)
@@ -499,8 +544,8 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         """Handle real-time data events from the coordinator."""
         if not self._processing_complete:
             # Still processing historical data, don't add real-time data to database yet
-            # but update the entity state to show current readings
-            _LOGGER.debug("Received real-time data during historical processing: %s A", current)
+            # but immediately update the entity state to show current readings
+            _LOGGER.debug("Historical Current Data sensor updated with real-time value: %s A (import in progress)", current)
             self.async_write_ha_state()
             return
 
