@@ -76,28 +76,6 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         """Return if entity is available."""
         return self.coordinator.last_update_success or self.coordinator.connected
 
-    @property
-    def native_value(self) -> float | None:
-        """Return the current measurement from the coordinator."""
-        if not self.available or not self.coordinator.data:
-            return None
-
-        current = self.coordinator.data.get("current")
-        if current is not None:
-            try:
-                return float(current)
-            except (ValueError, TypeError):
-                _LOGGER.warning("Invalid current value received: %s", current)
-                return None
-        return None
-
-    @property
-    def state(self) -> str | None:
-        """Return the state of the sensor."""
-        native_val = self.native_value
-        if native_val is None:
-            return None
-        return str(native_val)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -293,8 +271,10 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
 
     async def async_update_historical(self) -> None:
         """Update historical states - required by HistoricalSensor."""
-        # This is called by the HistoricalSensor framework
-        pass
+        # Called by the HistoricalSensor framework when needed
+        # Historical states are populated in _process_chunk and on_realtime_data methods
+        if not self._attr_historical_states:
+            self._attr_historical_states = []
 
     def is_processing_complete(self) -> bool:
         """Return True if processing is complete."""
