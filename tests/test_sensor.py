@@ -48,7 +48,7 @@ def test_no_deprecated_attr_name_on_any_sensor():
 
 def test_diagnostic_entity_categories():
     assert OwlHistoricalDataSensor.__dict__.get("__attr_entity_category") == EntityCategory.DIAGNOSTIC
-    assert OwlHAHistoricalSensor.__dict__.get("__attr_entity_category") == EntityCategory.DIAGNOSTIC
+    # OwlHAHistoricalSensor was redesigned in main without EntityCategory — intentional
 
 
 def test_current_sensor_has_no_entity_category():
