@@ -65,6 +65,12 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.energy_owl.const import CONF_NOT_FIRST_RUN, DOMAIN
 
 
+@pytest.fixture(autouse=True)
+def auto_enable_custom_integrations(enable_custom_integrations):
+    """Enable custom integrations for every test in this suite."""
+    yield
+
+
 @pytest.fixture
 def mock_config_entry():
     """Config entry for a device that has already completed its first run."""

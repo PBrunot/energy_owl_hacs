@@ -2,60 +2,136 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant import config_entries
 from homeassistant.const import CONF_PORT
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from homeassistant.data_entry_flow import AbortFlow
+
+from custom_components.energy_owl.config_flow import CannotConnect, OwlConfigFlow, validate_input
 from custom_components.energy_owl.const import DOMAIN
 
+# We test the flow class methods directly to avoid the HA integration loader,
+# which would require the real owlsensor package to be installed.
 
-async def test_config_flow_success(hass):
-    """A valid port must create a config entry."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
+
+def _make_mock_collector():
+    collector = MagicMock()
+    collector.connect = AsyncMock()
+    collector.disconnect = AsyncMock()
+    return collector
+
+
+# ---------------------------------------------------------------------------
+# validate_input helper
+# ---------------------------------------------------------------------------
+
+
+async def test_validate_input_success(hass):
+    """validate_input must return the port on success."""
+    collector = _make_mock_collector()
+    with patch(
+        "custom_components.energy_owl.config_flow.get_async_datacollector",
+        return_value=collector,
+    ):
+        result = await validate_input(hass, {CONF_PORT: "/dev/ttyUSB0"})
+
+    assert result == {CONF_PORT: "/dev/ttyUSB0"}
+    collector.connect.assert_awaited_once()
+    collector.disconnect.assert_awaited_once()
+
+
+async def test_validate_input_raises_cannot_connect(hass):
+    """validate_input must raise CannotConnect on any exception."""
+    with (
+        patch(
+            "custom_components.energy_owl.config_flow.get_async_datacollector",
+            side_effect=Exception("port not found"),
+        ),
+        pytest.raises(CannotConnect),
+    ):
+        await validate_input(hass, {CONF_PORT: "/dev/ttyUSB99"})
+
+
+async def test_validate_input_always_disconnects(hass):
+    """validate_input must disconnect even when connect() raises."""
+    collector = _make_mock_collector()
+    collector.connect.side_effect = Exception("timeout")
+    with (
+        patch(
+            "custom_components.energy_owl.config_flow.get_async_datacollector",
+            return_value=collector,
+        ),
+        pytest.raises(CannotConnect),
+    ):
+        await validate_input(hass, {CONF_PORT: "/dev/ttyUSB0"})
+
+    collector.disconnect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# OwlConfigFlow.async_step_user
+# ---------------------------------------------------------------------------
+
+
+async def _init_flow(hass):
+    """Create and initialise an OwlConfigFlow bound to hass."""
+    flow = OwlConfigFlow()
+    flow.hass = hass
+    flow.context = {"source": "user"}
+    flow.handler = DOMAIN
+    flow._progress_id = "test_flow"
+    # Bind to the flow manager so async_create_entry / async_show_form work.
+    hass.config_entries.flow._progress[flow._progress_id] = flow
+    return flow
+
+
+async def test_step_user_shows_form(hass):
+    """Step user with no input must return a FORM result."""
+    flow = await _init_flow(hass)
+    result = await flow.async_step_user(None)
+
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "user"
-
-    mock_collector = MagicMock()
-    mock_collector.connect = AsyncMock()
-    mock_collector.disconnect = AsyncMock()
-
-    with patch(
-        "custom_components.energy_owl.config_flow.get_async_datacollector",
-        return_value=mock_collector,
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_PORT: "/dev/ttyUSB0"},
-        )
-
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_PORT] == "/dev/ttyUSB0"
+    assert result["errors"] == {}
 
 
-async def test_config_flow_cannot_connect(hass):
-    """A SerialException must surface as a 'cannot_connect' form error."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
+async def test_step_user_cannot_connect(hass):
+    """A connection failure must set errors['base'] = 'cannot_connect'."""
+    flow = await _init_flow(hass)
 
     with patch(
-        "custom_components.energy_owl.config_flow.get_async_datacollector",
-        side_effect=Exception("port not found"),
+        "custom_components.energy_owl.config_flow.validate_input",
+        side_effect=CannotConnect,
     ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_PORT: "/dev/ttyUSB99"},
-        )
+        result = await flow.async_step_user({CONF_PORT: "/dev/ttyUSB99"})
 
     assert result["type"] == FlowResultType.FORM
     assert result["errors"]["base"] == "cannot_connect"
 
 
-async def test_config_flow_already_configured(hass):
-    """Configuring the same port twice must abort with 'already_configured'."""
+async def test_step_user_unexpected_exception(hass):
+    """An unexpected exception must set errors['base'] = 'unknown'."""
+    flow = await _init_flow(hass)
+
+    with patch(
+        "custom_components.energy_owl.config_flow.validate_input",
+        side_effect=RuntimeError("unexpected"),
+    ):
+        result = await flow.async_step_user({CONF_PORT: "/dev/ttyUSB0"})
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["errors"]["base"] == "unknown"
+
+
+async def test_step_user_already_configured(hass):
+    """Configuring the same port twice must raise AbortFlow('already_configured').
+
+    _abort_if_unique_id_configured() raises AbortFlow, which our config_flow
+    re-raises (it must not be swallowed by the generic except Exception block).
+    When called through the real HA flow manager this becomes a FORM/ABORT
+    result; when called directly in tests we assert the exception propagates.
+    """
     existing = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_PORT: "/dev/ttyUSB0"},
@@ -63,22 +139,30 @@ async def test_config_flow_already_configured(hass):
     )
     existing.add_to_hass(hass)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
+    flow = await _init_flow(hass)
 
-    mock_collector = MagicMock()
-    mock_collector.connect = AsyncMock()
-    mock_collector.disconnect = AsyncMock()
+    with (
+        patch(
+            "custom_components.energy_owl.config_flow.validate_input",
+            return_value={CONF_PORT: "/dev/ttyUSB0"},
+        ),
+        pytest.raises(AbortFlow) as exc_info,
+    ):
+        await flow.async_step_user({CONF_PORT: "/dev/ttyUSB0"})
+
+    assert exc_info.value.reason == "already_configured"
+
+
+async def test_step_user_success_creates_entry(hass):
+    """A valid port must create a config entry."""
+    flow = await _init_flow(hass)
 
     with patch(
-        "custom_components.energy_owl.config_flow.get_async_datacollector",
-        return_value=mock_collector,
+        "custom_components.energy_owl.config_flow.validate_input",
+        return_value={CONF_PORT: "/dev/ttyUSB0"},
     ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_PORT: "/dev/ttyUSB0"},
-        )
+        result = await flow.async_step_user({CONF_PORT: "/dev/ttyUSB0"})
 
-    assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "already_configured"
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_PORT] == "/dev/ttyUSB0"
+    assert "CM160" in result["title"]
