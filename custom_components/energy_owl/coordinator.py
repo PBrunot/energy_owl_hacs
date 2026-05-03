@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from owlsensor import CMDataCollector, get_async_datacollector
@@ -11,6 +11,7 @@ from serial import SerialException
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DEFAULT_MAX_RETRIES,
@@ -26,6 +27,8 @@ _LOGGER = logging.getLogger(__name__)
 
 class OwlDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the Energy OWL CM160."""
+
+    HISTORICAL_DATA_TIMEOUT = 120  # seconds without new records before forcing completion
 
     def __init__(
         self,
@@ -313,14 +316,13 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
             # 3. Check for completion using our own coordinator-level timeout
             # Use reasonable timeout - if no new data for 2 minutes, assume complete
-            HISTORICAL_DATA_TIMEOUT = 120  # 2 minutes timeout
             complete_from_timeout = False
             if self._last_new_historical_record_time is not None:
                 elapsed = time.monotonic() - self._last_new_historical_record_time
-                if elapsed > HISTORICAL_DATA_TIMEOUT:
+                if elapsed > self.HISTORICAL_DATA_TIMEOUT:
                     _LOGGER.warning(
                         "No new historical data for over %s seconds (%.1f minutes). Forcing completion. Total records collected: %d",
-                        HISTORICAL_DATA_TIMEOUT,
+                        self.HISTORICAL_DATA_TIMEOUT,
                         HISTORICAL_DATA_TIMEOUT / 60,
                         self._historical_data_count,
                     )
@@ -561,10 +563,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         if not self._realtime_listeners:
             return
 
-        from datetime import datetime
-        from homeassistant.util import dt as dt_util
-
-        timestamp = dt_util.as_local(datetime.now())
+        timestamp = dt_util.now()
 
         for listener in self._realtime_listeners:
             try:
@@ -572,6 +571,21 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     await listener.on_realtime_data(current, timestamp)
             except Exception as err:
                 _LOGGER.error("Error broadcasting real-time data to listener: %s", err)
+
+    async def async_reset_historical_data(self) -> None:
+        """Reset historical data state — public interface for service calls."""
+        if self._collector:
+            await self.hass.async_add_executor_job(
+                self._collector.clear_historical_data
+            )
+        self._historical_data_complete = False
+        self._historical_data_count = 0
+        self._last_historical_check = 0
+
+    async def async_reconnect(self) -> None:
+        """Disconnect then reconnect — public interface for service calls."""
+        await self.async_disconnect()
+        await self._async_connect()
 
     async def async_disconnect(self) -> None:
         """Disconnect from the device."""

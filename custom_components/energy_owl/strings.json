@@ -19,8 +19,13 @@
   "options": {
     "step": {
       "init": {
-        "title": "Configure sources",
-        "data": {}
+        "title": "Configure options",
+        "data": {
+          "enable_historical_import": "Import historical data"
+        },
+        "data_description": {
+          "enable_historical_import": "When enabled, the integration imports historical energy records from the CM160 device into Home Assistant statistics. Disable if you do not need past data or want to reduce database load."
+        }
       }
     }
   },
