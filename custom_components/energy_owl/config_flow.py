@@ -69,7 +69,7 @@ class OwlConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry) -> "OwlOptionsFlowHandler":
         """Return the options flow handler."""
-        return OwlOptionsFlowHandler(config_entry)
+        return OwlOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
