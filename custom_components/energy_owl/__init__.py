@@ -3,6 +3,7 @@
 import csv
 import logging
 import re
+from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PORT, Platform
@@ -12,11 +13,7 @@ from homeassistant.helpers import device_registry as dr
 
 from .const import (
     CONF_NOT_FIRST_RUN,
-    COORDINATOR,
-    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    FIRST_RUN,
-    UNDO_UPDATE_LISTENER,
 )
 from .coordinator import OwlDataUpdateCoordinator
 
@@ -25,27 +22,31 @@ PLATFORMS = [Platform.SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+@dataclass
+class EnergyOwlData:
+    """Runtime data for Energy OWL integration."""
+
+    coordinator: OwlDataUpdateCoordinator
+
+
+type EnergyOwlConfigEntry = ConfigEntry[EnergyOwlData]
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: EnergyOwlConfigEntry) -> bool:
     """Set up OWL data collector from a config entry."""
     port = entry.data[CONF_PORT]
 
-    # Create the coordinator
-    coordinator = OwlDataUpdateCoordinator(
-        hass,
-        port,
-        update_interval=DEFAULT_SCAN_INTERVAL,
-    )
+    coordinator = OwlDataUpdateCoordinator(hass, port)
 
-    # Connect to the device
     try:
-        await coordinator._async_setup()
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        raise
     except Exception as err:
         _LOGGER.error("Error setting up OWL coordinator for port %s: %s", port, err)
         raise ConfigEntryNotReady from err
 
-    # Track first run for historical data handling
     first_run = not bool(entry.data.get(CONF_NOT_FIRST_RUN))
-
     if first_run:
         hass.config_entries.async_update_entry(
             entry, data={**entry.data, CONF_NOT_FIRST_RUN: True}
@@ -54,42 +55,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "First run detected. Device will send historical data before real-time updates."
         )
 
-    undo_listener = entry.add_update_listener(_update_listener)
-
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        COORDINATOR: coordinator,
-        UNDO_UPDATE_LISTENER: undo_listener,
-        FIRST_RUN: first_run,
-    }
+    entry.runtime_data = EnergyOwlData(coordinator=coordinator)
+    entry.async_on_unload(entry.add_update_listener(_update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Register services
     await _register_services(hass)
 
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: EnergyOwlConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if not unload_ok:
-        return False
-
-    # Remove update listener
-    hass.data[DOMAIN][entry.entry_id][UNDO_UPDATE_LISTENER]()
-
-    # Disconnect the coordinator
-    coordinator: OwlDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][COORDINATOR]
-    await coordinator.async_disconnect()
-
-    # Clean up data
-    hass.data[DOMAIN].pop(entry.entry_id)
-
-    return True
+    if unload_ok:
+        await entry.runtime_data.coordinator.async_disconnect()
+    return unload_ok
 
 
-async def _update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _update_listener(hass: HomeAssistant, entry: EnergyOwlConfigEntry) -> None:
     """Handle options update."""
     await hass.config_entries.async_reload(entry.entry_id)
 
@@ -108,30 +91,22 @@ async def _register_services(hass: HomeAssistant) -> None:
         device_reg = dr.async_get(hass)
 
         if target_device_ids:
-            # A device was explicitly targeted
             target_device_id = next(iter(target_device_ids))
             device = device_reg.async_get(target_device_id)
             if not device:
                 raise ValueError(f"Device {target_device_id} not found in device registry")
-
-            # Find the config entry associated with this device
             config_entry_id = next(iter(device.config_entries), None)
-
         else:
-            # No device targeted, try to infer
-            domain_data = hass.data.get(DOMAIN, {})
-            if len(domain_data) == 1:
+            entries = hass.config_entries.async_entries(DOMAIN)
+            if len(entries) == 1:
                 _LOGGER.debug(
                     "Service call with no device_id, defaulting to the only available device."
                 )
-                config_entry_id = next(iter(domain_data))
-                # Find the device associated with this config entry
-                devices = dr.async_entries_for_config_entry(
-                    device_reg, config_entry_id
-                )
+                config_entry_id = entries[0].entry_id
+                devices = dr.async_entries_for_config_entry(device_reg, config_entry_id)
                 if devices:
                     target_device_id = devices[0].id
-            elif len(domain_data) > 1:
+            elif len(entries) > 1:
                 raise ValueError(
                     "Multiple devices found. Please target a specific device for this service call."
                 )
@@ -141,12 +116,13 @@ async def _register_services(hass: HomeAssistant) -> None:
                 "Could not determine target device. Please select a device for the service call."
             )
 
-        if config_entry_id not in hass.data.get(DOMAIN, {}):
+        entry = hass.config_entries.async_get_entry(config_entry_id)
+        if entry is None or not hasattr(entry, "runtime_data"):
             raise ValueError(
                 f"Integration for config entry {config_entry_id} not ready or not found"
             )
 
-        coordinator = hass.data[DOMAIN][config_entry_id][COORDINATOR]
+        coordinator: OwlDataUpdateCoordinator = entry.runtime_data.coordinator
         return coordinator, target_device_id
 
     async def get_historical_data(call: ServiceCall) -> dict:
@@ -154,17 +130,14 @@ async def _register_services(hass: HomeAssistant) -> None:
         coordinator, device_id = _get_coordinator_from_call(call)
         clear_existing = call.data.get("clear_existing", False)
 
-        # Clear existing data if requested
         if clear_existing and coordinator._collector:
             await hass.async_add_executor_job(
                 coordinator._collector.clear_historical_data
             )
-            # Reset coordinator state after clearing
             coordinator._historical_data_complete = False
             coordinator._historical_data_count = 0
             coordinator._last_historical_check = 0
 
-        # Get current historical data
         historical_data = await coordinator.get_historical_data()
 
         return {
@@ -184,12 +157,10 @@ async def _register_services(hass: HomeAssistant) -> None:
         """Service to clear historical data from the device."""
         coordinator, device_id = _get_coordinator_from_call(call)
 
-        # Clear historical data
         if coordinator._collector:
             await hass.async_add_executor_job(
                 coordinator._collector.clear_historical_data
             )
-        # Reset coordinator state after clearing
         coordinator._historical_data_complete = False
         coordinator._historical_data_count = 0
         coordinator._last_historical_check = 0
@@ -200,11 +171,8 @@ async def _register_services(hass: HomeAssistant) -> None:
         """Service to export historical data to a CSV file."""
         coordinator, device_id = _get_coordinator_from_call(call)
 
-        # Default filename if not provided
         default_filename = f"energy_owl_export_{device_id}.csv"
         filename = call.data.get("filename", default_filename)
-
-        # Basic sanitization to create a valid filename
         filename = re.sub(r'[\\/:"*?<>|]', "_", filename)
         if not filename.lower().endswith(".csv"):
             filename += ".csv"
@@ -217,7 +185,6 @@ async def _register_services(hass: HomeAssistant) -> None:
             return
 
         def _write_csv_sync():
-            """Write data to CSV file in executor to avoid blocking."""
             try:
                 with open(file_path, "w", newline="", encoding="utf-8") as csv_file:
                     writer = csv.writer(csv_file)
@@ -237,7 +204,15 @@ async def _register_services(hass: HomeAssistant) -> None:
 
         await hass.async_add_executor_job(_write_csv_sync)
 
-    # Register services only once
+    async def force_reconnect(call: ServiceCall) -> None:
+        """Service to force reconnection when device is stuck."""
+        coordinator, device_id = _get_coordinator_from_call(call)
+
+        _LOGGER.warning("Force reconnect requested for device %s", device_id)
+        await coordinator.async_disconnect()
+        await coordinator._async_connect()
+        _LOGGER.info("Force reconnection completed for device %s", device_id)
+
     if not hass.services.has_service(DOMAIN, "get_historical_data"):
         hass.services.async_register(
             DOMAIN,
@@ -247,34 +222,12 @@ async def _register_services(hass: HomeAssistant) -> None:
         )
 
     if not hass.services.has_service(DOMAIN, "clear_historical_data"):
-        hass.services.async_register(
-            DOMAIN,
-            "clear_historical_data",
-            clear_historical_data,
-        )
+        hass.services.async_register(DOMAIN, "clear_historical_data", clear_historical_data)
 
     if not hass.services.has_service(DOMAIN, "export_historical_data_csv"):
         hass.services.async_register(
-            DOMAIN,
-            "export_historical_data_csv",
-            export_historical_data_csv,
+            DOMAIN, "export_historical_data_csv", export_historical_data_csv
         )
-
-    async def force_reconnect(call: ServiceCall) -> None:
-        """Service to force reconnection when device is stuck."""
-        coordinator, device_id = _get_coordinator_from_call(call)
-
-        _LOGGER.warning("Force reconnect requested for device %s", device_id)
-
-        # Disconnect and reconnect
-        await coordinator.async_disconnect()
-        await coordinator._async_connect()
-
-        _LOGGER.info("Force reconnection completed for device %s", device_id)
 
     if not hass.services.has_service(DOMAIN, "force_reconnect"):
-        hass.services.async_register(
-            DOMAIN,
-            "force_reconnect",
-            force_reconnect,
-        )
+        hass.services.async_register(DOMAIN, "force_reconnect", force_reconnect)

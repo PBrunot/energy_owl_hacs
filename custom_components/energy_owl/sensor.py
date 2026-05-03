@@ -2,31 +2,29 @@
 
 import logging
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import COORDINATOR, DOMAIN
-from .coordinator import OwlDataUpdateCoordinator
+from . import EnergyOwlConfigEntry
 from .current_sensor import OwlCMSensor
-from .historical_data_sensor import OwlHistoricalDataSensor
 from .ha_historical_sensor import OwlHAHistoricalSensor
+from .historical_data_sensor import OwlHistoricalDataSensor
 
 _LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: EnergyOwlConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Sensors."""
-    coordinator: OwlDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id][COORDINATOR]
+    coordinator = config_entry.runtime_data.coordinator
 
-    sensors = [
+    async_add_entities([
         OwlCMSensor(coordinator, config_entry),
         OwlHistoricalDataSensor(coordinator, config_entry),
         OwlHAHistoricalSensor(coordinator, config_entry),
-    ]
-
-    async_add_entities(sensors)
+    ])

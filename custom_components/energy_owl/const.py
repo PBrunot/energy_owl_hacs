@@ -4,11 +4,6 @@ DOMAIN = "energy_owl"
 
 CONF_NOT_FIRST_RUN = "not_first_run"
 
-FIRST_RUN = "first_run"
-OWL_OBJECT = "owl_object"
-COORDINATOR = "coordinator"
-UNDO_UPDATE_LISTENER = "undo_update_listener"
-
 MODEL = "CM160"
 
 # Configuration defaults

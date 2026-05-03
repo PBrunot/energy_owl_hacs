@@ -13,7 +13,7 @@ from .coordinator import OwlDataUpdateCoordinator
 class OwlHistoricalDataSensor(OwlEntity, SensorEntity):
     """Sensor to track historical data collection progress."""
 
-    _attr_name = "Historical Data Status"
+    _attr_translation_key = "historical_data_status"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
@@ -58,7 +58,6 @@ class OwlHistoricalDataSensor(OwlEntity, SensorEntity):
             count = self.coordinator.data.get("historical_data_count", 0)
             complete = self.coordinator.data.get("historical_data_complete", False)
 
-            # Add helpful context based on status
             if complete:
                 attrs["message"] = f"Historical data sync completed with {count} records"
             elif count > 0:
