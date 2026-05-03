@@ -14,6 +14,7 @@ class OwlEntity(CoordinatorEntity):
     """Base class for Energy OWL entities."""
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
         """Initialize the entity."""
@@ -26,8 +27,13 @@ class OwlEntity(CoordinatorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info, linking all entities to a single device."""
+        port = self.config_entry.data.get("port", "unknown")
         return DeviceInfo(
             identifiers={(DOMAIN, self._device_unique_id)},
+            name=f"Energy OWL CM160 ({port})",
+            manufacturer="Energy OWL",
+            model="CM160",
+            sw_version="1.0",
         )
 
     @property
@@ -45,7 +51,6 @@ class OwlEntity(CoordinatorEntity):
             "historical_data_count": self.coordinator.data.get("historical_data_count", 0),
         }
 
-        # Add low-level debug info from the collector if available
         debug_info = self.coordinator.data.get("debug_info")
         if debug_info and isinstance(debug_info, dict):
             for key, value in debug_info.items():

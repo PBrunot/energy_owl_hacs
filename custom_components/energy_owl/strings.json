@@ -20,8 +20,20 @@
     "step": {
       "init": {
         "title": "Configure sources",
-        "data": {
-        }
+        "data": {}
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "current": {
+        "name": "Current"
+      },
+      "historical_data_status": {
+        "name": "Historical Data Status"
+      },
+      "historical_data_processor": {
+        "name": "Historical Data Processor"
       }
     }
   }

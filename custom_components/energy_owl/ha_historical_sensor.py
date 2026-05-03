@@ -20,10 +20,8 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent, EntityCategory
 from homeassistant.core import callback
-from homeassistant.helpers.entity import DeviceInfo
 
 from .base_entity import OwlEntity
-from .const import DOMAIN
 from .coordinator import OwlDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,7 +30,7 @@ _LOGGER = logging.getLogger(__name__)
 class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, SensorEntity):
     """Historical data processor that pushes to the main current sensor stream."""
 
-    _attr_name = "CM160 - Historical Data Processor"
+    _attr_translation_key = "historical_data_processor"
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -62,18 +60,6 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
         self.coordinator.register_realtime_listener(self)
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return the device info, which is shared across all entities."""
-        port = self.config_entry.data.get("port", "unknown")
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device_unique_id)},
-            name=f"Energy OWL CM160 ({port})",
-            manufacturer="Energy OWL",
-            model="CM160",
-            sw_version="1.0",
-        )
 
     @property
     def available(self) -> bool:

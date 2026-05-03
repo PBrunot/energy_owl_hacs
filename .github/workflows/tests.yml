@@ -1,0 +1,26 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, ha-update]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    name: Run pytest
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install test dependencies
+        run: pip install pytest-homeassistant-custom-component
+
+      - name: Run tests
+        run: pytest --tb=short -v
