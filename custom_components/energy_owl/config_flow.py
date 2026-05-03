@@ -12,13 +12,19 @@ import voluptuous as vol
 from homeassistant.config_entries import (
     ConfigFlow,
     ConfigFlowResult,
+    OptionsFlow,
 )
 from homeassistant.const import CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import DOMAIN, MODEL
+from .const import (
+    CONF_ENABLE_HISTORICAL,
+    DEFAULT_ENABLE_HISTORICAL,
+    DOMAIN,
+    MODEL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,6 +65,12 @@ class OwlConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry) -> "OwlOptionsFlowHandler":
+        """Return the options flow handler."""
+        return OwlOptionsFlowHandler(config_entry)
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -89,6 +101,27 @@ class OwlConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
+class OwlOptionsFlowHandler(OptionsFlow):
+    """Handle options for Energy OWL."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle options form."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_ENABLE_HISTORICAL,
+                    default=self.config_entry.options.get(
+                        CONF_ENABLE_HISTORICAL, DEFAULT_ENABLE_HISTORICAL
+                    ),
+                ): bool,
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
 
 
 class CannotConnect(HomeAssistantError):

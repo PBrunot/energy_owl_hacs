@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.util import dt as dt_util
 from homeassistant_historical_sensor import (
@@ -47,7 +47,8 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._import_complete = False
         self._last_imported_timestamp: datetime | None = None
         self._processing = False
-        
+        self._import_task: asyncio.Task | None = None
+
         # Configurable processing parameters
         self._chunk_size = 25  # Small chunks to avoid database stress
         self._chunk_delay = 2.0  # Seconds between chunks
@@ -105,19 +106,17 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         super()._handle_coordinator_update()
-        
-        if (self.coordinator.data and 
-            self.coordinator.data.get("connected", False) and 
-            not self._import_complete and 
-            not self._processing):
-            # Start processing
-            self.hass.async_create_task(self._import_historical_data())
+
+        if (self.coordinator.data and
+                self.coordinator.data.get("connected", False) and
+                not self._import_complete and
+                (self._import_task is None or self._import_task.done())):
+            self._import_task = self.hass.async_create_task(
+                self._import_historical_data()
+            )
 
     async def _import_historical_data(self) -> None:
         """Import historical data in simple batches."""
-        if self._processing:
-            return
-            
         self._processing = True
         _LOGGER.info("Starting historical data import")
         
@@ -188,12 +187,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         for record in chunk:
             timestamp = record["timestamp"]
             
-            # Ensure timezone awareness
-            if timestamp.tzinfo is None:
-                timestamp = dt_util.as_local(timestamp)
-            else:
-                timestamp = dt_util.as_local(timestamp)
-            
+            timestamp = dt_util.as_local(timestamp)
             try:
                 current_value = float(record["current"])
                 historical_state = HistoricalState(
@@ -237,11 +231,7 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         
         # Import is complete, add real-time data to database
         try:
-            if timestamp.tzinfo is None:
-                timestamp = dt_util.as_local(timestamp)
-            else:
-                timestamp = dt_util.as_local(timestamp)
-            
+            timestamp = dt_util.as_local(timestamp)
             historical_state = HistoricalState(
                 state=current,
                 dt=timestamp
@@ -268,5 +258,8 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
 
     async def async_will_remove_from_hass(self) -> None:
         """Clean up when entity is removed."""
+        self._import_complete = True  # signals the import loop to stop
+        if self._import_task and not self._import_task.done():
+            self._import_task.cancel()
         self.coordinator.unregister_historical_pusher(self)
         self.coordinator.unregister_realtime_listener(self)

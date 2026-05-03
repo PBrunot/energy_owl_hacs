@@ -130,13 +130,8 @@ async def _register_services(hass: HomeAssistant) -> None:
         coordinator, device_id = _get_coordinator_from_call(call)
         clear_existing = call.data.get("clear_existing", False)
 
-        if clear_existing and coordinator._collector:
-            await hass.async_add_executor_job(
-                coordinator._collector.clear_historical_data
-            )
-            coordinator._historical_data_complete = False
-            coordinator._historical_data_count = 0
-            coordinator._last_historical_check = 0
+        if clear_existing:
+            await coordinator.async_reset_historical_data()
 
         historical_data = await coordinator.get_historical_data()
 
@@ -157,14 +152,7 @@ async def _register_services(hass: HomeAssistant) -> None:
         """Service to clear historical data from the device."""
         coordinator, device_id = _get_coordinator_from_call(call)
 
-        if coordinator._collector:
-            await hass.async_add_executor_job(
-                coordinator._collector.clear_historical_data
-            )
-        coordinator._historical_data_complete = False
-        coordinator._historical_data_count = 0
-        coordinator._last_historical_check = 0
-
+        await coordinator.async_reset_historical_data()
         _LOGGER.info("Historical data cleared for device %s", device_id)
 
     async def export_historical_data_csv(call: ServiceCall) -> None:
@@ -209,8 +197,7 @@ async def _register_services(hass: HomeAssistant) -> None:
         coordinator, device_id = _get_coordinator_from_call(call)
 
         _LOGGER.warning("Force reconnect requested for device %s", device_id)
-        await coordinator.async_disconnect()
-        await coordinator._async_connect()
+        await coordinator.async_reconnect()
         _LOGGER.info("Force reconnection completed for device %s", device_id)
 
     if not hass.services.has_service(DOMAIN, "get_historical_data"):

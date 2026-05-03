@@ -62,7 +62,7 @@ def test_current_sensor_has_no_entity_category():
 
 
 async def test_sensor_platform_creates_three_entities(hass, mock_config_entry, mock_coordinator):
-    """sensor.async_setup_entry must add exactly three entities."""
+    """sensor.async_setup_entry must add three entities when historical import is enabled (default)."""
     from custom_components.energy_owl.sensor import async_setup_entry as sensor_setup
 
     mock_config_entry.add_to_hass(hass)
@@ -74,6 +74,35 @@ async def test_sensor_platform_creates_three_entities(hass, mock_config_entry, m
     assert len(entities) == 3
     types = {type(e).__name__ for e in entities}
     assert types == {"OwlCMSensor", "OwlHistoricalDataSensor", "OwlHAHistoricalSensor"}
+
+
+async def test_sensor_platform_creates_two_entities_when_historical_disabled(
+    hass, mock_coordinator
+):
+    """sensor.async_setup_entry must add only two entities when historical import is disabled."""
+    from custom_components.energy_owl.sensor import async_setup_entry as sensor_setup
+    from custom_components.energy_owl.const import CONF_ENABLE_HISTORICAL
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from custom_components.energy_owl.const import DOMAIN
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"port": "/dev/ttyUSB0"},
+        options={CONF_ENABLE_HISTORICAL: False},
+        entry_id="no_hist_entry",
+        unique_id="/dev/ttyUSB0",
+        version=1,
+    )
+    entry.add_to_hass(hass)
+    entry.runtime_data = EnergyOwlData(coordinator=mock_coordinator)
+
+    entities: list = []
+    await sensor_setup(hass, entry, entities.extend)
+
+    assert len(entities) == 2
+    types = {type(e).__name__ for e in entities}
+    assert types == {"OwlCMSensor", "OwlHistoricalDataSensor"}
+    assert not any(type(e).__name__ == "OwlHAHistoricalSensor" for e in entities)
 
 
 async def test_sensor_unique_ids_are_distinct(hass, mock_config_entry, mock_coordinator):
