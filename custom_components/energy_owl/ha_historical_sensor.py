@@ -50,13 +50,17 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._import_task: asyncio.Task | None = None
 
         # Configurable processing parameters
-        self._chunk_size = 25  # Small chunks to avoid database stress
-        self._chunk_delay = 2.0  # Seconds between chunks
+        self._chunk_size = 10  # Small chunks to avoid database stress
+        self._chunk_delay = 3.0  # Seconds between chunks
         self._batch_delay = 10.0  # Seconds between full data refreshes
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
         self.coordinator.register_realtime_listener(self)
+
+    def _friendly_name_internal(self) -> str | None:
+        """Compatibility shim: homeassistant_historical_sensor calls this on older HA versions."""
+        return self.name
 
     @property
     def available(self) -> bool:
