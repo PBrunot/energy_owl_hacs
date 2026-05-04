@@ -126,7 +126,7 @@ class OwlEnergySensor(OwlEntity, SensorEntity):
             _LOGGER.info(
                 "Pushed %d hourly energy statistics (%.3f kWh total) for %s",
                 len(stats),
-                stats[-1].sum,
+                stats[-1]["sum"],
                 statistic_id,
             )
         except Exception as err:

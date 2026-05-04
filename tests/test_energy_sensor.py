@@ -27,9 +27,9 @@ def test_build_single_record():
     stats = _build_hourly_statistics(records, 230.0)
 
     assert len(stats) == 1
-    assert stats[0].start == datetime(2024, 1, 1, 10, 0, tzinfo=UTC)
+    assert stats[0]["start"] == datetime(2024, 1, 1, 10, 0, tzinfo=UTC)
     # 2.0 A × 230 V × 1 h ÷ 1000 = 0.46 kWh
-    assert stats[0].sum == pytest.approx(0.46, rel=1e-3)
+    assert stats[0]["sum"] == pytest.approx(0.46, rel=1e-3)
 
 
 def test_build_multiple_records_same_hour_averaged():
@@ -43,7 +43,7 @@ def test_build_multiple_records_same_hour_averaged():
 
     assert len(stats) == 1
     # avg = 4.0, 4.0 × 230 ÷ 1000 = 0.92 kWh
-    assert stats[0].sum == pytest.approx(0.92, rel=1e-3)
+    assert stats[0]["sum"] == pytest.approx(0.92, rel=1e-3)
 
 
 def test_build_cumulative_sum():
@@ -57,11 +57,11 @@ def test_build_cumulative_sum():
 
     assert len(stats) == 3
     # Each hour: 2.0 × 230 ÷ 1000 = 0.46 kWh
-    assert stats[0].sum == pytest.approx(0.46, rel=1e-3)
-    assert stats[1].sum == pytest.approx(0.92, rel=1e-3)
-    assert stats[2].sum == pytest.approx(1.38, rel=1e-3)
+    assert stats[0]["sum"] == pytest.approx(0.46, rel=1e-3)
+    assert stats[1]["sum"] == pytest.approx(0.92, rel=1e-3)
+    assert stats[2]["sum"] == pytest.approx(1.38, rel=1e-3)
     # Monotonically increasing
-    assert stats[0].sum < stats[1].sum < stats[2].sum
+    assert stats[0]["sum"] < stats[1]["sum"] < stats[2]["sum"]
 
 
 def test_build_skips_invalid_current():
@@ -74,7 +74,7 @@ def test_build_skips_invalid_current():
 
     assert len(stats) == 1
     # Only the valid record counts; avg = 2.0
-    assert stats[0].sum == pytest.approx(0.46, rel=1e-3)
+    assert stats[0]["sum"] == pytest.approx(0.46, rel=1e-3)
 
 
 def test_build_voltage_scales_linearly():
@@ -83,7 +83,7 @@ def test_build_voltage_scales_linearly():
     stats_230 = _build_hourly_statistics(records, 230.0)
     stats_460 = _build_hourly_statistics(records, 460.0)
 
-    assert stats_460[0].sum == pytest.approx(stats_230[0].sum * 2, rel=1e-6)
+    assert stats_460[0]["sum"] == pytest.approx(stats_230[0]["sum"] * 2, rel=1e-6)
 
 
 def test_build_hour_start_truncated_to_minute_zero():
@@ -93,8 +93,8 @@ def test_build_hour_start_truncated_to_minute_zero():
     ]
     stats = _build_hourly_statistics(records, 230.0)
 
-    assert stats[0].start.minute == 0
-    assert stats[0].start.second == 0
+    assert stats[0]["start"].minute == 0
+    assert stats[0]["start"].second == 0
 
 
 def test_build_unsorted_input_is_ordered():
@@ -107,9 +107,9 @@ def test_build_unsorted_input_is_ordered():
     stats = _build_hourly_statistics(records, 230.0)
 
     assert len(stats) == 3
-    assert stats[0].start.hour == 10
-    assert stats[1].start.hour == 11
-    assert stats[2].start.hour == 12
+    assert stats[0]["start"].hour == 10
+    assert stats[1]["start"].hour == 11
+    assert stats[2]["start"].hour == 12
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +169,8 @@ async def test_energy_accumulates_additive(hass, mock_coordinator, mock_config_e
         sensor._handle_coordinator_update()
         after_first = sensor._total_kwh
 
-        # Second cycle: another hour
-        sensor._last_update = sensor._last_update + timedelta(hours=1)
+        # Second cycle: another hour (pretend 1h has passed since now)
+        sensor._last_update = now - timedelta(hours=1)
         sensor._handle_coordinator_update()
 
     # Should have doubled
@@ -288,10 +288,10 @@ async def test_push_calls_async_add_external_statistics(hass, mock_coordinator, 
     mock_recorder.assert_called_once()
     call_args = mock_recorder.call_args
     _hass_arg, metadata, stats = call_args.args
-    assert metadata.has_sum is True
+    assert metadata["has_sum"] is True
     assert len(stats) == 2  # two hourly buckets
     # Cumulative sum increases
-    assert stats[0].sum < stats[1].sum
+    assert stats[0]["sum"] < stats[1]["sum"]
 
 
 async def test_push_skips_when_no_records(hass, mock_coordinator, mock_config_entry):

@@ -4,7 +4,7 @@
   "version": "0.8.0",
   "codeowners": ["@PBrunot"],
   "config_flow": true,
-  "dependencies": ["recorder"],
+  "after_dependencies": ["recorder"],
   "documentation": "https://github.com/PBrunot/energy_owl_hacs",
   "integration_type": "device",
   "issue_tracker": "https://github.com/PBrunot/energy_owl_hacs/issues",
