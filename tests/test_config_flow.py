@@ -254,7 +254,7 @@ async def test_options_flow_drops_empty_voltage_entity(hass, mock_config_entry):
         user_input={
             CONF_ENABLE_HISTORICAL: True,
             CONF_VOLTAGE: 230.0,
-            CONF_VOLTAGE_ENTITY: "",
+            # CONF_VOLTAGE_ENTITY omitted — entity selector sends no value when cleared
         },
     )
 
