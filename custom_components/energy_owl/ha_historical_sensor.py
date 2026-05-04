@@ -49,10 +49,12 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         self._processing = False
         self._import_task: asyncio.Task | None = None
 
-        # Configurable processing parameters
-        self._chunk_size = 10  # Small chunks to avoid database stress
-        self._chunk_delay = 3.0  # Seconds between chunks
-        self._batch_delay = 10.0  # Seconds between full data refreshes
+        # Tuned to avoid StaleDataError: the HA recorder commits every ~5 s;
+        # writing to the states table more often than that causes the recorder's
+        # ORM session to lose track of pending row updates.
+        self._chunk_size = 50   # fewer DB roundtrips per cycle
+        self._chunk_delay = 30.0  # seconds between chunks — must be > recorder commit interval
+        self._batch_delay = 60.0  # seconds between full data refreshes
 
         # Register with coordinator
         self.coordinator.register_historical_pusher(self)
@@ -212,16 +214,18 @@ class OwlHAHistoricalSensor(PollUpdateMixin, HistoricalSensor, OwlEntity, Sensor
         try:
             # Push to Home Assistant
             await self.async_write_ha_historical_states()
-            
+
             # Update counters
             self._total_imported += len(historical_states)
             self._last_imported_timestamp = max(record["timestamp"] for record in chunk)
-            
-            _LOGGER.debug("Imported chunk of %d records (total: %d)", 
+
+            _LOGGER.debug("Imported chunk of %d records (total: %d)",
                          len(historical_states), self._total_imported)
-            
+
         except Exception as err:
-            _LOGGER.error("Failed to import chunk: %s", err)
+            # StaleDataError (recorder ORM conflict) and similar — skip this chunk
+            # and let the next cycle retry from _last_imported_timestamp.
+            _LOGGER.warning("Skipping chunk due to recorder conflict, will retry: %s", err)
         
         # Update entity state
         self.async_write_ha_state()
