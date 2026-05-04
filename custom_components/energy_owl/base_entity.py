@@ -3,10 +3,17 @@
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import (
+    CONF_VOLTAGE,
+    CONF_VOLTAGE_ENTITY,
+    DEFAULT_VOLTAGE,
+    DOMAIN,
+    VERSION,
+)
 from .coordinator import OwlDataUpdateCoordinator
 
 
@@ -24,6 +31,18 @@ class OwlEntity(CoordinatorEntity):
         port_safe = str.replace(port, '/', '-').replace('\\', '-')
         self._device_unique_id = f"CM160-{port_safe}-v2"
 
+    def _get_voltage(self) -> float:
+        """Return grid voltage from a HA entity state or the configured default."""
+        entity_id = self.config_entry.options.get(CONF_VOLTAGE_ENTITY)
+        if entity_id:
+            state = self.hass.states.get(entity_id)
+            if state and state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+                try:
+                    return float(state.state)
+                except (ValueError, TypeError):
+                    pass
+        return float(self.config_entry.options.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
+
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info, linking all entities to a single device."""
@@ -33,7 +52,7 @@ class OwlEntity(CoordinatorEntity):
             name=f"Energy OWL CM160 ({port})",
             manufacturer="Energy OWL",
             model="CM160",
-            sw_version="1.0",
+            sw_version=VERSION,
         )
 
     @property

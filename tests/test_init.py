@@ -111,3 +111,56 @@ async def test_unload_entry_skips_disconnect_on_platform_failure(hass, mock_conf
 
     assert result is False
     mock_coordinator.async_disconnect.assert_not_awaited()
+
+
+async def test_unload_entry_deregisters_services_for_last_entry(hass, mock_config_entry, mock_coordinator):
+    """When the last entry is unloaded, all four services must be deregistered."""
+    await _setup(hass, mock_config_entry, mock_coordinator)
+
+    for svc in ("get_historical_data", "clear_historical_data", "export_historical_data_csv", "force_reconnect"):
+        assert hass.services.has_service(DOMAIN, svc), f"Service {svc!r} not registered after setup"
+
+    with patch.object(hass.config_entries, "async_unload_platforms", new=AsyncMock(return_value=True)):
+        result = await async_unload_entry(hass, mock_config_entry)
+
+    assert result is True
+    for svc in ("get_historical_data", "clear_historical_data", "export_historical_data_csv", "force_reconnect"):
+        assert not hass.services.has_service(DOMAIN, svc), f"Service {svc!r} still registered after last unload"
+
+
+async def test_unload_entry_keeps_services_when_other_entries_exist(hass, mock_coordinator):
+    """Services must NOT be deregistered when at least one other entry remains loaded."""
+    from custom_components.energy_owl.const import CONF_NOT_FIRST_RUN
+
+    entry_a = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_PORT: "/dev/ttyUSB0", CONF_NOT_FIRST_RUN: True},
+        entry_id="entry_a",
+        unique_id="/dev/ttyUSB0",
+        version=1,
+    )
+    entry_b = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_PORT: "/dev/ttyUSB1", CONF_NOT_FIRST_RUN: True},
+        entry_id="entry_b",
+        unique_id="/dev/ttyUSB1",
+        version=1,
+    )
+
+    # Set up both entries
+    await _setup(hass, entry_a, mock_coordinator)
+    with (
+        patch("custom_components.energy_owl.OwlDataUpdateCoordinator", return_value=mock_coordinator),
+        patch.object(hass.config_entries, "async_forward_entry_setups", new=AsyncMock()),
+    ):
+        entry_b.add_to_hass(hass)
+        await async_setup_entry(hass, entry_b)
+
+    assert hass.services.has_service(DOMAIN, "get_historical_data")
+
+    # Unload only entry_a; entry_b still active
+    with patch.object(hass.config_entries, "async_unload_platforms", new=AsyncMock(return_value=True)):
+        await async_unload_entry(hass, entry_a)
+
+    # Services must still be registered
+    assert hass.services.has_service(DOMAIN, "get_historical_data"), "Service removed too early"

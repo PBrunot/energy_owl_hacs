@@ -18,10 +18,14 @@ from homeassistant.const import CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_ENABLE_HISTORICAL,
+    CONF_VOLTAGE,
+    CONF_VOLTAGE_ENTITY,
     DEFAULT_ENABLE_HISTORICAL,
+    DEFAULT_VOLTAGE,
     DOMAIN,
     MODEL,
 )
@@ -109,16 +113,42 @@ class OwlOptionsFlowHandler(OptionsFlow):
     ) -> ConfigFlowResult:
         """Handle options form."""
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            # Drop voltage_entity key when left empty so _get_voltage falls through to default.
+            cleaned: dict[str, Any] = {}
+            for key, value in user_input.items():
+                if key == CONF_VOLTAGE_ENTITY and not value:
+                    continue
+                cleaned[key] = value
+            return self.async_create_entry(data=cleaned)
 
+        options = self.config_entry.options
         schema = vol.Schema(
             {
                 vol.Required(
                     CONF_ENABLE_HISTORICAL,
-                    default=self.config_entry.options.get(
-                        CONF_ENABLE_HISTORICAL, DEFAULT_ENABLE_HISTORICAL
-                    ),
+                    default=options.get(CONF_ENABLE_HISTORICAL, DEFAULT_ENABLE_HISTORICAL),
                 ): bool,
+                vol.Optional(
+                    CONF_VOLTAGE_ENTITY,
+                    description={"suggested_value": options.get(CONF_VOLTAGE_ENTITY)},
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                        device_class="voltage",
+                    )
+                ),
+                vol.Optional(
+                    CONF_VOLTAGE,
+                    default=options.get(CONF_VOLTAGE, DEFAULT_VOLTAGE),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=100.0,
+                        max=260.0,
+                        step=0.5,
+                        unit_of_measurement="V",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

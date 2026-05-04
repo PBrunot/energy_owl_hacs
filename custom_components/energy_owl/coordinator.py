@@ -291,7 +291,6 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             if new_count > self._last_historical_check:
                 new_records = historical_data[self._last_historical_check:]
                 _LOGGER.debug("Processing %d new historical records", len(new_records))
-                await self._emit_historical_records(new_records)
                 self._last_historical_check = new_count
                 # Reset our own timeout timer since we just got fresh data
                 if self._last_new_historical_record_time is None:
@@ -323,7 +322,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.warning(
                         "No new historical data for over %s seconds (%.1f minutes). Forcing completion. Total records collected: %d",
                         self.HISTORICAL_DATA_TIMEOUT,
-                        HISTORICAL_DATA_TIMEOUT / 60,
+                        self.HISTORICAL_DATA_TIMEOUT / 60,
                         self._historical_data_count,
                     )
                     complete_from_timeout = True
@@ -334,37 +333,23 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(
                     "Historical data sync is considered complete. Acknowledging to transition to real-time."
                 )
-                # Don't acknowledge to device yet - wait for pushers to complete
                 self._historical_data_complete = True
                 self._fire_completion_event()
-                _LOGGER.info(
-                    "Historical data collection complete. Waiting for %d pushers to finish processing before acknowledging to device.",
-                    len(self._historical_data_pushers)
-                )
+                if not self._historical_data_pushers:
+                    # No pushers registered (historical import disabled): acknowledge directly.
+                    _LOGGER.info("No pushers registered; acknowledging to device immediately.")
+                    await self._acknowledge_historical_sync_completion()
+                else:
+                    _LOGGER.info(
+                        "Historical data complete. Waiting for %d pushers before acknowledging to device.",
+                        len(self._historical_data_pushers)
+                    )
 
             return new_records
 
         except Exception as err:
             _LOGGER.warning("Error processing historical data: %s", err, exc_info=True)
             return []
-
-    async def _emit_historical_records(self, records: list) -> None:
-        """Emit historical records as Home Assistant events."""
-        for record in records:
-            try:
-                # Fire event for each historical record with proper domain prefix
-                port_safe = self.port.replace("/", "-").replace("\\", "-")
-                self.hass.bus.fire(
-                    f"{DOMAIN}_historical_data",
-                    {
-                        "device_port": self.port,
-                        "device_id": f"CM160-{port_safe}",
-                        "timestamp": record["timestamp"].isoformat(),
-                        "current": record["current"],
-                    }
-                )
-            except Exception as err:
-                _LOGGER.warning("Error emitting historical record event: %s", err)
 
     def _fire_completion_event(self) -> None:
         """Fire the historical data completion event."""
