@@ -8,8 +8,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import EnergyOwlConfigEntry
 from .const import CONF_ENABLE_HISTORICAL, DEFAULT_ENABLE_HISTORICAL
 from .current_sensor import OwlCMSensor
+from .energy_sensor import OwlEnergySensor
 from .ha_historical_sensor import OwlHAHistoricalSensor
 from .historical_data_sensor import OwlHistoricalDataSensor
+from .power_sensor import OwlPowerSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +28,8 @@ async def async_setup_entry(
 
     entities = [
         OwlCMSensor(coordinator, config_entry),
+        OwlPowerSensor(coordinator, config_entry),
+        OwlEnergySensor(coordinator, config_entry),
         OwlHistoricalDataSensor(coordinator, config_entry),
     ]
 

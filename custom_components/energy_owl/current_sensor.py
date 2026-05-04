@@ -63,10 +63,6 @@ class OwlCMSensor(OwlEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        super()._handle_coordinator_update()
-        
-        # Explicitly write state to ensure it's recorded to database
-        # This ensures real-time current values appear in HA history
         if self.coordinator.data and self.coordinator.data.get("current") is not None:
-            _LOGGER.debug("Current sensor updating with new value: %s A", self.coordinator.data.get("current"))
-            self.async_write_ha_state()
+            _LOGGER.debug("Current sensor updating with value: %s A", self.coordinator.data.get("current"))
+        super()._handle_coordinator_update()

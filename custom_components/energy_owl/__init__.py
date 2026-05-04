@@ -64,11 +64,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnergyOwlConfigEntry) ->
     return True
 
 
+_SERVICES = (
+    "get_historical_data",
+    "clear_historical_data",
+    "export_historical_data_csv",
+    "force_reconnect",
+)
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: EnergyOwlConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         await entry.runtime_data.coordinator.async_disconnect()
+        # Unregister services when the last entry is removed so stale handlers are gone.
+        remaining = [
+            e for e in hass.config_entries.async_entries(DOMAIN)
+            if e.entry_id != entry.entry_id
+        ]
+        if not remaining:
+            for svc in _SERVICES:
+                if hass.services.has_service(DOMAIN, svc):
+                    hass.services.async_remove(DOMAIN, svc)
     return unload_ok
 
 

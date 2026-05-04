@@ -20,3 +20,24 @@ clear_historical_data:
   target:
     device:
       integration: energy_owl
+
+export_historical_data_csv:
+  name: Export Historical Data to CSV
+  description: Export historical energy data from the CM160 device to a CSV file in the Home Assistant config directory.
+  target:
+    device:
+      integration: energy_owl
+  fields:
+    filename:
+      name: Filename
+      description: Name of the CSV file to create. Defaults to energy_owl_export_<device_id>.csv.
+      example: "energy_owl_export.csv"
+      selector:
+        text:
+
+force_reconnect:
+  name: Force Reconnect
+  description: Force reconnection to the CM160 device when it appears stuck or unresponsive.
+  target:
+    device:
+      integration: energy_owl
