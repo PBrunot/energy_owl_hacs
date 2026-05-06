@@ -11,5 +11,5 @@
   "diagnostics": true,
   "iot_class": "local_polling",
   "loggers": ["owlsensor"],
-  "requirements": ["owlsensor>=0.5.8", "homeassistant-historical-sensor>=2.0.0"]
+  "requirements": ["owlsensor>=0.6.0", "homeassistant-historical-sensor>=2.0.0"]
 }
