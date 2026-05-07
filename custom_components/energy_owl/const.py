@@ -1,7 +1,7 @@
 """Constants for the Energy OWL CM160 energy sensor component."""
 
 DOMAIN = "energy_owl"
-VERSION = "0.8.0"
+VERSION = "0.8.5"
 
 CONF_NOT_FIRST_RUN = "not_first_run"
 CONF_ENABLE_HISTORICAL = "enable_historical_import"

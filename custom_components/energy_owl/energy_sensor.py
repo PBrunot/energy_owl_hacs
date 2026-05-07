@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
-    SensorEntity,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -32,7 +32,7 @@ from homeassistant.components.recorder.models import StatisticData, StatisticMet
 from homeassistant.components.recorder.statistics import async_add_external_statistics
 
 
-class OwlEnergySensor(OwlEntity, SensorEntity):
+class OwlEnergySensor(OwlEntity, RestoreSensor):
     """Cumulative energy in kWh — compatible with Energy Dashboard.
 
     Real-time energy is integrated from successive current readings.
@@ -53,6 +53,18 @@ class OwlEnergySensor(OwlEntity, SensorEntity):
         self._total_kwh: float = 0.0
         self._last_update: datetime | None = None
         self._historical_backfill_done: bool = False
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known energy total on startup."""
+        await super().async_added_to_hass()
+        last_sensor_data = await self.async_get_last_sensor_data()
+        if last_sensor_data is not None:
+            try:
+                self._total_kwh = float(last_sensor_data.native_value)
+                self._last_update = dt_util.utcnow()
+                _LOGGER.debug("Restored energy total: %.4f kWh", self._total_kwh)
+            except (ValueError, TypeError):
+                _LOGGER.warning("Could not restore energy total from last state; starting from 0")
 
     @property
     def available(self) -> bool:
