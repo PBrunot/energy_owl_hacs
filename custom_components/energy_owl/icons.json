@@ -1,0 +1,11 @@
+{
+  "integration": {
+    "icon": "mdi:meter-electric"
+  },
+  "services": {
+    "get_historical_data": "mdi:database-arrow-down",
+    "clear_historical_data": "mdi:database-remove",
+    "export_historical_data_csv": "mdi:file-export",
+    "force_reconnect": "mdi:refresh"
+  }
+}
