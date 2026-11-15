@@ -1,7 +1,9 @@
 # Energy OWL CM160 — Home Assistant Integration
 
-[![HACS Badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
+[![HACS Badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![Version](https://img.shields.io/github/v/release/PBrunot/energy_owl_hacs)](https://github.com/PBrunot/energy_owl_hacs/releases)
+[![Tests](https://github.com/PBrunot/energy_owl_hacs/actions/workflows/tests.yml/badge.svg)](https://github.com/PBrunot/energy_owl_hacs/actions/workflows/tests.yml)
+[![Validation](https://github.com/PBrunot/energy_owl_hacs/actions/workflows/validate.yml/badge.svg)](https://github.com/PBrunot/energy_owl_hacs/actions/workflows/validate.yml)
 [![License](https://img.shields.io/github/license/PBrunot/energy_owl_hacs)](LICENSE)
 [![Issues](https://img.shields.io/github/issues/PBrunot/energy_owl_hacs)](https://github.com/PBrunot/energy_owl_hacs/issues)
 
@@ -32,6 +34,15 @@ Home Assistant custom integration for the **OWL CM160** USB energy monitor. Prov
 1. Download the latest release from [GitHub Releases](https://github.com/PBrunot/energy_owl_hacs/releases).
 2. Copy `custom_components/energy_owl/` into your HA config's `custom_components/` directory.
 3. Restart Home Assistant.
+
+## Removal
+
+Remove the entry from **Settings > Devices & Services > Energy OWL > Delete**.
+Then uninstall it through HACS (or remove `custom_components/energy_owl/` for a
+manual installation) and restart Home Assistant. Remove the Energy Dashboard source
+if you no longer need it. Existing Recorder history and the entry's `.storage`
+energy ledger are not deleted by this integration. Back them up before any manual
+cleanup; deleting the ledger resets its accounting baseline if restored later.
 
 ## Setup
 
@@ -65,10 +76,10 @@ All entities belong to a single **Energy OWL CM160 (`<port>`)** device.
 
 | Entity | Unit | Class | Notes |
 |--------|------|-------|-------|
-| Current | A | Measurement | Real-time current from the CM160 (~15 s interval) |
+| Current | A | Measurement | Real-time current from the CM160; coordinator polls every 30 s |
 | Power | W | Measurement | Current × configured voltage, updated in sync with current |
 | Energy | kWh | Total increasing | Live cumulative estimate; restored across restarts, skips stale samples and gaps. See the combined statistics source below. |
-| Historical Data Status | — | Diagnostic (disabled) | Shows sync progress: `Starting sync` → `Syncing (N records)` → `Complete` |
+| Historical Data Status | - | Diagnostic (disabled) | Translated `starting`, `syncing`, `complete`, `disconnected` states; record count in attributes |
 
 > **Note**: During the initial historical data transmission (which can take 5–10 minutes), the Current and Power sensors show no value. The Historical Data Status sensor reflects progress. Real-time updates begin after the sync completes.
 
@@ -149,7 +160,10 @@ target:
 
 ### `energy_owl_historical_data_complete`
 
-Fired once when the CM160 finishes transmitting its historical memory and transitions to real-time mode.
+Fired when the coordinator marks historical collection complete for a sync session.
+It does not confirm that Recorder has committed the import or that the device has
+acknowledged completion. The event's `device_id` is a legacy port-derived identifier,
+not the Home Assistant device-registry ID used by action targets.
 
 ```yaml
 event_type: energy_owl_historical_data_complete
@@ -277,7 +291,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Historical import safety and measurement assumptions
 
-Version 0.9.1 uses HA's statistics API exclusively. It removes the historical state
+Since v0.9.1, the integration uses HA's statistics API exclusively. It removes the historical state
 writer and its dependency. Old Historical Data Processor registry entries may be
 removed manually. Live entity IDs remain unchanged; the combined statistics source
 uses the valid `energy_owl:cm160_<port>_v2_energy` form.
@@ -314,5 +328,19 @@ compacts older data into immutable hourly totals. Older replayed minutes cannot 
 energy twice. Late corrections outside that window are deliberately ignored.
 
 See [action plan.md](action%20plan.md) for implementation status and remaining
-Priority 2/3 improvements. Physical meter accuracy and gaps without measurements
+follow-up work and validation limits. Physical meter accuracy and gaps without measurements
 cannot be reconstructed by the integration.
+
+## Development and validation
+
+The latest published release is **v0.9.2**. The default branch also contains
+unreleased packaging, metadata, documentation and validation improvements.
+
+Validation on this branch: **132 tests pass on HA 2026.5.2 and 2026.10.4**.
+HA 2026.11.1 passes a runtime smoke check; its full pytest suite awaits a compatible
+pytest-homeassistant-custom-component release. Local hassfest validation passes.
+CI additionally runs HACS validation, with brand registration explicitly deferred.
+
+See [development instructions](docs/development.md) for the pinned test stacks,
+metadata checks and CI validation, and [AGENTS.md](AGENTS.md) for contributor guidance. This custom integration makes no Bronze or other
+Home Assistant quality-scale certification claim; see the [rule audit](docs/quality-scale.md).

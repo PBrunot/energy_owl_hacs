@@ -5,26 +5,46 @@ on:
     branches: [main, ha-update]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   tests:
-    name: Run pytest (${{ matrix.requirements }})
+    name: Run pytest (${{ matrix.stack }})
     strategy:
+      fail-fast: false
       matrix:
-        requirements: [requirements-test-min.txt, requirements-test.txt]
+        include:
+          - stack: HA 2026.5.2 minimum
+            requirements: requirements-test-min.txt
+          - stack: HA 2026.10.4 fixture baseline
+            requirements: requirements-test.txt
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-          cache: pip
-          cache-dependency-path: ${{ matrix.requirements }}
-
+      - name: Install pinned installer
+        run: python -m pip install uv==0.9.28
       - name: Install test dependencies
-        run: pip install -r ${{ matrix.requirements }}
-
+        env:
+          TEST_REQUIREMENTS: ${{ matrix.requirements }}
+        run: uv pip install --system -r "$TEST_REQUIREMENTS"
       - name: Run tests
         run: pytest --tb=short -v
+
+  current-runtime:
+    name: Runtime smoke (HA 2026.11.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python -m pip install uv==0.9.28
+      - run: uv pip install --system -r requirements-runtime-current.txt
+      - run: python script/check_runtime.py

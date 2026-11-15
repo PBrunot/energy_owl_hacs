@@ -8,7 +8,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
-    VERSION,
 )
 from .coordinator import OwlDataUpdateCoordinator
 from .energy import resolve_voltage
@@ -43,7 +42,8 @@ class OwlEntity(CoordinatorEntity):
             name=f"Energy OWL CM160 ({port})",
             manufacturer="Energy OWL",
             model="CM160",
-            sw_version=VERSION,
+            # Clear the integration release previously stored as device firmware.
+            sw_version=None,
         )
 
     @property

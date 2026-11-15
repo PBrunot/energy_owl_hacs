@@ -2,7 +2,7 @@
 
 ## Current status
 
-All eleven Priority 1 items are implemented. Version metadata and release notes are prepared for **0.9.2**. Priority 2 lifecycle and structure improvements are now implemented and validated below. Priority 3 remains follow-up work. The original review and earlier checkpoints are preserved below for context; their OPEN statuses are historical.
+All eleven Priority 1 items and the Priority 2 improvements shipped in **v0.9.2** (`d1da682`). Priority 2 lifecycle and structure improvements are now implemented and validated below. Priority 3 packaging, documentation and local validation work is implemented; remaining external checks are recorded below. The original review and earlier checkpoints are preserved below for context; their OPEN statuses are historical.
 
 | Priority 1 item | Completed solution |
 | --- | --- |
@@ -31,6 +31,48 @@ All eleven Priority 1 items are implemented. Version metadata and release notes 
 - Identity investigation: the pinned protocol/library does not provide a verified immutable hardware identifier. Reconfiguration explicitly applies to the same adapter and freezes its original port-based identity; no speculative hardware-ID migration is performed.
 - Validation: **125 tests passed on HA 2026.5.2 and 125 on HA 2026.10.4**, Python 3.14.2 in WSL. New coverage includes real integration-loader setup/unload, action validation/errors, poll/reset serialization, setup cancellation/rollback failure, freshness and reconfiguration continuity. Runtime Ruff checks, focused lint on new test modules, component JSON parsing and `git diff --check` pass.
 - No physical adapter or production database tested; no commit, push or release performed for Priority 2.
+
+## Priority 3 checkpoint (unreleased, 2026-11-15)
+
+User explicitly requested Priority 3 work without a release. Manifest version remains
+0.9.2. User subsequently authorized commit/push and CI verification, but explicitly prohibited
+a new release. No tag or release will be created for this work.
+
+- Added docs/quality-scale.md: an explicit audit of all twenty Bronze rules, evidence,
+  exceptions and gaps. No tier/certification claim. Brand registration and complete
+  config-flow branch coverage are outstanding.
+- Retained owlsensor 0.7.2 and the pinned minimum/baseline pytest stacks; added pinned
+  Ruff and a current HA 2026.11.1 runtime-smoke stack. CI and the local test runner
+  reinstall the declared dependencies; separate environments prevent stale stack reuse.
+- Minimum HA remains 2026.5.2 in HACS/README. Removed invalid `homeassistant` and
+  `diagnostics` manifest keys (diagnostics is discovered by module). Added local
+  metadata consistency checks and config-entry-only CONFIG_SCHEMA.
+- Actual hassfest validation found/fixed unsupported integration icon metadata,
+  obsolete action target filters and response YAML. Device selection now uses an
+  explicit required single-device field; action response support stays registered in
+  Python. Existing target.device_id automations remain accepted by runtime schemas.
+- Removed import-time manifest disk reads and integration-version-as-device-firmware
+  metadata, clearing the legacy device firmware field on entity registration. The release
+  version is now only in manifest.json.
+- Renamed CLAUDE.md to AGENTS.md and rewrote it to reflect the four entities, coordinator, energy helpers, durable
+  statistics ledger, serialx, async cleanup, identity and available local validation.
+  Added development/removal docs and corrected the diagnostic status description.
+- Added loader tests using the actual coordinator, importer and platform forwarding,
+  replacing serial I/O only. Tests cover enabled/disabled history, entity/device
+  registration, fresh current state, connection-refusal retry/cleanup and config-flow
+  duplicate/refusal handling. Existing real Recorder tests remain enabled.
+- Added CI jobs for pinned lint, metadata consistency, hassfest and HACS. HACS comments
+  are disabled; only the brands check is explicitly deferred. Remote CI will be checked after the authorized push. No local Docker runtime was
+  available for the full HACS action.
+- Validation: **132 tests pass on HA 2026.5.2 and 132 on HA 2026.10.4**. Actual
+  hassfest from HA Core 2026.10.4 reports zero invalid integrations and no warnings.
+  Runtime Ruff, metadata/JSON checks, Bash syntax and git diff --check pass.
+- Latest stable HA at review time is 2026.11.1. Its real runtime imports, collector /
+  coordinator constructors and action registration pass script/check_runtime.py.
+  Full pytest on that version is NOT claimed: the latest published fixture package
+  (0.13.375, pinned to HA 2026.10.4) fails importing the removed private HA logger
+  helper `_clear_logger_overwrites`. An explicit HA override reproduced the failure;
+  it was removed, and no HA-internal compatibility shims were added.
 
 ## Release 0.9.2 follow-up
 

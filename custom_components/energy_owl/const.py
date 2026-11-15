@@ -1,10 +1,6 @@
 """Constants for the Energy OWL CM160 energy sensor component."""
 
-import json
-from pathlib import Path
-
 DOMAIN = "energy_owl"
-VERSION = json.loads((Path(__file__).parent / "manifest.json").read_text())["version"]
 
 CONF_NOT_FIRST_RUN = "not_first_run"
 CONF_ENABLE_HISTORICAL = "enable_historical_import"

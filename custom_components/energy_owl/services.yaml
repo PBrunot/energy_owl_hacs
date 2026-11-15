@@ -1,12 +1,16 @@
 get_historical_data:
   name: Get Historical Data
   description: Retrieve historical data from the Energy OWL CM160 device.
-  target:
-    device:
-      integration: energy_owl
-  response:
-    optional: true
   fields:
+    device_id:
+      name: Device
+      description: Select exactly one loaded Energy OWL device.
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: energy_owl
+          multiple: false
     clear_existing:
       name: Clear Existing Data
       description: Whether to clear existing historical data before collecting new data.
@@ -17,17 +21,30 @@ get_historical_data:
 clear_historical_data:
   name: Clear Historical Data
   description: Clear stored historical data from the Energy OWL CM160 device.
-  target:
-    device:
-      integration: energy_owl
+  fields:
+    device_id:
+      name: Device
+      description: Select exactly one loaded Energy OWL device.
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: energy_owl
+          multiple: false
 
 export_historical_data_csv:
   name: Export Historical Data to CSV
   description: Export historical energy data from the CM160 device to a CSV file in the Home Assistant config directory.
-  target:
-    device:
-      integration: energy_owl
   fields:
+    device_id:
+      name: Device
+      description: Select exactly one loaded Energy OWL device.
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: energy_owl
+          multiple: false
     filename:
       name: Filename
       description: Name of the CSV file to create. Defaults to energy_owl_export_<device_id>.csv.
@@ -38,6 +55,13 @@ export_historical_data_csv:
 force_reconnect:
   name: Force Reconnect
   description: Force reconnection to the CM160 device when it appears stuck or unresponsive.
-  target:
-    device:
-      integration: energy_owl
+  fields:
+    device_id:
+      name: Device
+      description: Select exactly one loaded Energy OWL device.
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: energy_owl
+          multiple: false

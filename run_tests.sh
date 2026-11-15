@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-VENV_DIR="$(dirname "$0")/.venv"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+TEST_STACK="${TEST_STACK:-baseline}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+TEST_VENV_DIR="${TEST_VENV_DIR:-$SCRIPT_DIR/.venv-$TEST_STACK}"
 
-# Create venv if not present
-if [ ! -f "$VENV_DIR/bin/pytest" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv "$VENV_DIR"
-    echo "Installing pytest-homeassistant-custom-component (this takes a few minutes)..."
-    "$VENV_DIR/bin/pip" install --quiet -r "$(dirname "$0")/requirements-test.txt"
-    echo "Done."
+case "$TEST_STACK" in
+    minimum) TEST_REQUIREMENTS="$SCRIPT_DIR/requirements-test-min.txt" ;;
+    baseline) TEST_REQUIREMENTS="$SCRIPT_DIR/requirements-test.txt" ;;
+    *) echo "TEST_STACK must be minimum or baseline" >&2; exit 2 ;;
+esac
+
+"$PYTHON_BIN" -c 'import sys; sys.exit("Python 3.14 is required" if sys.version_info[:2] != (3, 14) else 0)'
+if [ ! -x "$TEST_VENV_DIR/bin/python" ]; then
+    "$PYTHON_BIN" -m venv "$TEST_VENV_DIR"
 fi
-
-echo ""
-echo "Running tests..."
-"$VENV_DIR/bin/pytest" --tb=short -v "$@"
+if ! "$TEST_VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
+    "$TEST_VENV_DIR/bin/python" -m ensurepip --upgrade
+fi
+# Reinstall from the pins on every invocation so an old environment cannot silently
+# keep a different HA stack. uv reuses cached wheels and already-correct installs.
+"$TEST_VENV_DIR/bin/python" -m pip install --quiet uv==0.9.28
+"$TEST_VENV_DIR/bin/uv" pip install --python "$TEST_VENV_DIR/bin/python" -r "$TEST_REQUIREMENTS"
+cd "$SCRIPT_DIR"
+"$TEST_VENV_DIR/bin/pytest" --tb=short -v "$@"

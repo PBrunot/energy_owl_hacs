@@ -17,8 +17,8 @@ from custom_components.energy_owl.const import (
     DOMAIN,
 )
 
-# We test the flow class methods directly to avoid the HA integration loader,
-# which would require the real owlsensor package to be installed.
+# Focused unit tests call flow methods directly. test_loader.py also exercises
+# the integration loader with the real owlsensor package installed.
 
 
 def _make_mock_collector():
