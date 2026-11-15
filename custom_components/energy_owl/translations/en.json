@@ -6,6 +6,13 @@
         "data": {
           "port": "Serial port"
         }
+      },
+      "reconfigure": {
+        "title": "Change connection port",
+        "description": "Use this only for the same CM160 adapter. Existing entity and energy history identities are retained.",
+        "data": {
+          "port": "Serial port"
+        }
       }
     },
     "error": {
@@ -13,7 +20,8 @@
       "unknown": "Unexpected error"
     },
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "reconfigure_successful": "Connection port updated."
     }
   },
   "options": {
@@ -45,8 +53,34 @@
         "name": "Energy"
       },
       "historical_data_status": {
-        "name": "Historical Data Status"
+        "name": "Historical Data Status",
+        "state": {
+          "disconnected": "Disconnected",
+          "starting": "Starting sync",
+          "syncing": "Syncing",
+          "complete": "Complete"
+        }
       }
+    }
+  },
+  "exceptions": {
+    "single_target": {
+      "message": "Select exactly one Energy OWL device."
+    },
+    "invalid_target": {
+      "message": "The target must belong to one Energy OWL entry."
+    },
+    "entry_not_loaded": {
+      "message": "The Energy OWL entry is not loaded."
+    },
+    "no_history": {
+      "message": "No historical records are available to export."
+    },
+    "export_failed": {
+      "message": "Could not export historical data: {error}"
+    },
+    "action_failed": {
+      "message": "Device action failed: {error}"
     }
   }
 }

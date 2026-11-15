@@ -3,18 +3,16 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta
-from typing import Any
-
-from owlsensor import CMDataCollector
-
-from .collector import TimestampedCollector, get_async_datacollector
-from serialx import SerialException
+from datetime import timedelta
+from typing import Any, TypedDict
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
+from owlsensor import CMDataCollector
+from serialx import SerialException
 
+from .collector import TimestampedCollector, get_async_datacollector
 from .const import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_RETRY_DELAY,
@@ -25,6 +23,26 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class CoordinatorDiagnostics(TypedDict):
+    """Public, serializable lifecycle diagnostics."""
+
+    connected: bool
+    last_error: str | None
+    last_update_success: bool
+    total_updates: int
+    error_count: int
+    historical_complete: bool
+    historical_records: int
+    generation: int
+    acknowledged: bool
+    pushers_registered: int
+    all_pushers_complete: bool
+    auto_recovery_enabled: bool
+    recovery_attempts: int
+    max_recovery_attempts: int
+    collector: dict[str, Any]
 
 
 class OwlDataUpdateCoordinator(DataUpdateCoordinator):
@@ -74,6 +92,24 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=update_interval),
         )
 
+    def diagnostics_snapshot(self) -> CoordinatorDiagnostics:
+        """Return a public snapshot of connection, sync and recovery state."""
+        return {
+            "connected": self.connected, "last_error": self.last_error,
+            "last_update_success": self.last_update_success,
+            "total_updates": self.total_updates, "error_count": self.error_count,
+            "historical_complete": self.historical_data_complete,
+            "historical_records": self.historical_data_count,
+            "generation": self.historical_sync_generation,
+            "acknowledged": self.historical_sync_acknowledged,
+            "pushers_registered": len(self._historical_data_pushers),
+            "all_pushers_complete": self._all_pushers_complete,
+            "auto_recovery_enabled": self._auto_recovery_enabled,
+            "recovery_attempts": self._recovery_attempts,
+            "max_recovery_attempts": self._max_recovery_attempts,
+            "collector": (self.data or {}).get("debug_info", {}),
+        }
+
     async def _async_setup(self) -> None:
         """Set up the coordinator."""
         await self._async_connect()
@@ -101,7 +137,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 self.port
             )
             _LOGGER.debug("Calling collector.connect()")
-            await self._collector.connect()
+            if not await self._collector.connect():
+                raise SerialException(f"Could not open serial port {self.port}")
             _LOGGER.debug("Collector.connect() completed")
 
             self._connected = True
@@ -120,6 +157,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Failed to connect to device: {err}") from err
 
     async def _async_update_data(self) -> dict[str, Any]:
+        """Serialize a complete poll against reset, snapshots and reconnect."""
+        async with self._collector_lock:
+            return await self._async_update_data_unlocked()
+
+    async def _async_update_data_unlocked(self) -> dict[str, Any]:
         """Unified data fetch method - handles both historical and real-time data transparently."""
         _LOGGER.debug(
             "Starting update cycle. Connected: %s, Historical Complete: %s",
@@ -128,7 +170,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         )
         if not self._connected or self._collector is None:
             _LOGGER.debug("Not connected, attempting to connect.")
-            await self._async_connect()
+            await self._async_connect_unlocked()
             if not self._collector:
                 raise UpdateFailed("Collector is not available after connection attempt.")
 
@@ -143,16 +185,16 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 # During this phase, `current` will be None.
                 _LOGGER.debug("Checking historical data status. Complete: %s", self._historical_data_complete)
                 if not self._historical_data_complete:
-                    new_historical_records = await self._process_and_consume_historical_data()
+                    new_historical_records = await self._process_and_consume_historical_data_unlocked()
 
                 if (self._historical_data_complete and not self._historical_data_pushers
                         and not self.historical_sync_acknowledged):
-                    await self._acknowledge_historical_sync_completion()
+                    await self._acknowledge_historical_sync_completion_unlocked()
 
                 # Phase 2: Always attempt to get a real-time reading.
                 # The library should return None if it's not available yet (i.e., during historical sync).
                 _LOGGER.debug("Attempting to fetch current reading.")
-                current, sample_timestamp = await self._read_live_sample()
+                current, sample_timestamp = await self._read_live_sample_unlocked()
                 if sample_timestamp is None or not 0 <= (dt_util.utcnow() - sample_timestamp).total_seconds() <= 90:
                     current = None
 
@@ -177,7 +219,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                             self._max_recovery_attempts
                         )
 
-                        await self._attempt_automatic_recovery()
+                        await self._attempt_automatic_recovery_unlocked()
                         return self.data  # Return existing data to avoid update failure
 
                     elif elapsed_since_completion > 60:  # Log warning after 1 minute
@@ -197,7 +239,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                         "Real-time reading received. Finalizing historical data sync."
                     )
                     if not self._historical_data_pushers:
-                        await self._acknowledge_historical_sync_completion()
+                        await self._acknowledge_historical_sync_completion_unlocked()
                     self._historical_data_complete = True
 
                 # Reset recovery state if we got real-time data
@@ -277,10 +319,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                         _LOGGER.info("Serial error detected, attempting to reconnect to device...")
                         self._connected = False
                         try:
-                            await self._async_connect()
+                            await self._async_connect_unlocked()
                             _LOGGER.info("Reconnection successful")
                         except Exception as connect_err:
-                            _LOGGER.warning("Reconnection failed: %s", connect_err)
+                            _LOGGER.warning("Reconnection failed: %s", connect_err, exc_info=True)
                 else:
                     # Final attempt failed
                     self._connected = False
@@ -297,16 +339,23 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
     async def _read_live_sample(self):
         """Read a coherent value/timestamp pair without racing serial lifecycle."""
         async with self._collector_lock:
-            collector = self._collector
-            if collector is None:
-                return None, None
-            if isinstance(collector, TimestampedCollector):
-                return collector.get_live_sample()
-            # Only test doubles use this fallback; the runtime factory is pinned.
-            current = await self.hass.async_add_executor_job(collector.get_current)
-            return current, dt_util.utcnow()
+            return await self._read_live_sample_unlocked()
+
+    async def _read_live_sample_unlocked(self):
+        collector = self._collector
+        if collector is None:
+            return None, None
+        if isinstance(collector, TimestampedCollector):
+            return collector.get_live_sample()
+        # Only test doubles use this fallback; the runtime factory is pinned.
+        current = await self.hass.async_add_executor_job(collector.get_current)
+        return current, dt_util.utcnow()
 
     async def _process_and_consume_historical_data(self) -> list:
+        async with self._collector_lock:
+            return await self._process_and_consume_historical_data_unlocked()
+
+    async def _process_and_consume_historical_data_unlocked(self) -> list:
         """Process historical data, determine if sync is complete, and return new records."""
         if not self._collector:
             return []
@@ -328,11 +377,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 if self._last_new_historical_record_time is None:
                     _LOGGER.debug("Started historical data timeout timer.")
                 self._last_new_historical_record_time = time.monotonic()
-            elif new_count == self._last_historical_check and new_count > 0:
-                # Data count stable - start timeout if not already started
-                if self._last_new_historical_record_time is None:
-                    _LOGGER.info("Historical data count stable at %d records. Starting completion timeout.", new_count)
-                    self._last_new_historical_record_time = time.monotonic()
+            elif (new_count == self._last_historical_check and new_count > 0
+                  and self._last_new_historical_record_time is None):
+                _LOGGER.info("Historical data count stable at %d records. Starting completion timeout.", new_count)
+                self._last_new_historical_record_time = time.monotonic()
 
             self._historical_data_count = new_count
 
@@ -370,7 +418,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 if not self._historical_data_pushers:
                     # No pushers registered (historical import disabled): acknowledge directly.
                     _LOGGER.info("No pushers registered; acknowledging to device immediately.")
-                    await self._acknowledge_historical_sync_completion()
+                    await self._acknowledge_historical_sync_completion_unlocked()
                 else:
                     _LOGGER.info(
                         "Historical data complete. Waiting for %d pushers before acknowledging to device.",
@@ -424,6 +472,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("Could not acknowledge historical sync") from err
 
     async def _attempt_automatic_recovery(self) -> None:
+        async with self._collector_lock:
+            await self._attempt_automatic_recovery_unlocked()
+
+    async def _attempt_automatic_recovery_unlocked(self) -> None:
         """Attempt automatic recovery when device is stuck."""
         self._recovery_attempts += 1
 
@@ -443,21 +495,20 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Step 1: Disconnect current connection
             _LOGGER.info("Disconnecting from device for recovery...")
-            await self.async_disconnect()
+            await self.async_disconnect_unlocked()
 
             # Step 2: Wait a moment
             await asyncio.sleep(2)
 
             # Step 3: Reset state variables
             self._connected = False
-            # Don't reset historical_data_complete - we want to maintain completion state
-            # and go directly to real-time mode after reconnection
+            # Reconnection starts a fresh history/import generation.
             self._historical_completion_time = None
             self._last_error = None
 
             # Step 4: Reconnect
             _LOGGER.info("Reconnecting to device...")
-            await self._async_connect()
+            await self._async_connect_unlocked()
 
             # Step 5: Send success notification
             await self.hass.services.async_call(
@@ -465,15 +516,15 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 "create",
                 {
                     "title": "Energy OWL Recovery Complete",
-                    "message": f"Automatic recovery completed. Device reconnected and should resume normal operation.",
+                    "message": "Automatic recovery completed. Device reconnected and should resume normal operation.",
                     "notification_id": f"energy_owl_recovery_complete_{self._recovery_attempts}",
                 },
             )
 
             _LOGGER.info("Automatic recovery attempt %d completed successfully", self._recovery_attempts)
 
-        except Exception as err:
-            _LOGGER.error("Automatic recovery attempt %d failed: %s", self._recovery_attempts, err, exc_info=True)
+        except Exception:
+            _LOGGER.exception("Automatic recovery attempt %d failed", self._recovery_attempts)
 
             # Disable auto-recovery if we've reached max attempts
             if self._recovery_attempts >= self._max_recovery_attempts:
@@ -517,10 +568,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         # Check if all pushers are complete
         all_complete = True
         for registered_pusher in self._historical_data_pushers:
-            if hasattr(registered_pusher, 'is_processing_complete'):
-                if not registered_pusher.is_processing_complete():
-                    all_complete = False
-                    break
+            if (hasattr(registered_pusher, 'is_processing_complete')
+                    and not registered_pusher.is_processing_complete()):
+                all_complete = False
+                break
 
         if all_complete and not self._all_pushers_complete:
             _LOGGER.info("All historical data pushers have completed. Now acknowledging to device.")
@@ -538,7 +589,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     },
                 )
             except Exception:
-                pass
+                _LOGGER.debug("Completion notification unavailable", exc_info=True)
 
     @property
     def connected(self) -> bool:
@@ -614,8 +665,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 if hasattr(listener, 'on_realtime_data'):
                     await listener.on_realtime_data(current, timestamp)
-            except Exception as err:
-                _LOGGER.error("Error broadcasting real-time data to listener: %s", err)
+            except Exception:
+                _LOGGER.exception("Error broadcasting real-time data to listener")
 
     async def async_reset_historical_data(self) -> None:
         async with self._collector_lock:
@@ -638,6 +689,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._last_historical_check = 0
         self._last_new_historical_record_time = None
         self._historical_completion_time = None
+        self._historical_data_count = 0
+        self.data = None
 
     async def async_reconnect(self) -> None:
         """Disconnect then reconnect — public interface for service calls."""

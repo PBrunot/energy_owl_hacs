@@ -6,17 +6,16 @@ from homeassistant.const import CONF_PORT
 from homeassistant.exceptions import ConfigEntryNotReady
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.energy_owl import EnergyOwlData, async_setup_entry, async_unload_entry
+from custom_components.energy_owl import EnergyOwlData, async_setup, async_setup_entry, async_unload_entry
 from custom_components.energy_owl.const import CONF_NOT_FIRST_RUN, DOMAIN
 
-# All tests call async_setup_entry / async_unload_entry directly to avoid
-# going through HA's integration loader (which would fail in CI without the
-# real owlsensor package installed).
+# Unit tests isolate serial acquisition; loader coverage lives in test_services.py.
 
 
 async def _setup(hass, entry, mock_coordinator):
     """Helper: call async_setup_entry with platform forwarding mocked."""
     entry.add_to_hass(hass)
+    await async_setup(hass, {})
     with (
         patch("custom_components.energy_owl.OwlDataUpdateCoordinator", return_value=mock_coordinator),
         patch.object(hass.config_entries, "async_forward_entry_setups", new=AsyncMock()),
@@ -113,8 +112,8 @@ async def test_unload_entry_skips_disconnect_on_platform_failure(hass, mock_conf
     mock_coordinator.async_disconnect.assert_not_awaited()
 
 
-async def test_unload_entry_deregisters_services_for_last_entry(hass, mock_config_entry, mock_coordinator):
-    """When the last entry is unloaded, all four services must be deregistered."""
+async def test_unload_entry_keeps_services_for_last_entry(hass, mock_config_entry, mock_coordinator):
+    """Actions remain available when the last entry is unloaded."""
     await _setup(hass, mock_config_entry, mock_coordinator)
 
     for svc in ("get_historical_data", "clear_historical_data", "export_historical_data_csv", "force_reconnect"):
@@ -125,7 +124,7 @@ async def test_unload_entry_deregisters_services_for_last_entry(hass, mock_confi
 
     assert result is True
     for svc in ("get_historical_data", "clear_historical_data", "export_historical_data_csv", "force_reconnect"):
-        assert not hass.services.has_service(DOMAIN, svc), f"Service {svc!r} still registered after last unload"
+        assert hass.services.has_service(DOMAIN, svc)
 
 
 async def test_unload_entry_keeps_services_when_other_entries_exist(hass, mock_coordinator):
@@ -212,3 +211,25 @@ async def test_unload_closes_importer_before_disconnect(hass, mock_config_entry,
     mock_coordinator.async_disconnect.side_effect = disconnect
     with patch.object(hass.config_entries, "async_unload_platforms", return_value=True):
         assert await async_unload_entry(hass, mock_config_entry)
+
+
+async def test_cancelled_setup_closes_connection(hass, mock_config_entry, mock_coordinator):
+    import asyncio
+    mock_coordinator.async_config_entry_first_refresh.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await _setup(hass, mock_config_entry, mock_coordinator)
+    mock_coordinator.async_disconnect.assert_awaited_once()
+    mock_coordinator.unregister_historical_pusher.assert_called_once()
+
+
+async def test_platform_rollback_failure_still_disconnects(hass, mock_config_entry, mock_coordinator):
+    mock_config_entry.add_to_hass(hass)
+    with (
+        patch("custom_components.energy_owl.OwlDataUpdateCoordinator", return_value=mock_coordinator),
+        patch.object(hass.config_entries, "async_forward_entry_setups", side_effect=RuntimeError("setup failed")),
+        patch.object(hass.config_entries, "async_unload_platforms", side_effect=RuntimeError("rollback failed")),
+    ):
+        with pytest.raises(RuntimeError):
+            await async_setup_entry(hass, mock_config_entry)
+    mock_coordinator.async_disconnect.assert_awaited_once()
+    mock_coordinator.unregister_historical_pusher.assert_called_once()

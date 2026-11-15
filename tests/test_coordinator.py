@@ -243,3 +243,24 @@ async def test_reset_invalidates_snapshot_before_clear_completes(hass):
     collector.clear_historical_data.side_effect = clear
     await coordinator.async_reset_historical_data()
     assert not coordinator.historical_sync_acknowledged
+
+
+@pytest.mark.parametrize("connected", [False, True])
+async def test_connection_result_controls_status(hass, caplog, connected):
+    """Only a successful library return may mark the coordinator connected."""
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+
+    collector = _make_collector()
+    collector.connect = AsyncMock(return_value=connected)
+    coordinator = OwlDataUpdateCoordinator(hass, "/dev/test")
+    with patch("custom_components.energy_owl.coordinator.get_async_datacollector", return_value=collector):
+        if connected:
+            await coordinator._async_connect()
+            assert coordinator.connected
+            assert coordinator.last_error is None
+        else:
+            with pytest.raises(UpdateFailed, match="Could not open serial port"):
+                await coordinator._async_connect()
+            assert not coordinator.connected
+            assert "Could not open serial port" in coordinator.last_error
+            assert "Successfully connected to OWL device" not in caplog.text

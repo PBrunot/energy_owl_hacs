@@ -5,10 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from owlsensor import get_async_datacollector
-from serialx import SerialException
 import voluptuous as vol
-
 from homeassistant.config_entries import (
     ConfigFlow,
     ConfigFlowResult,
@@ -19,6 +16,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
+from owlsensor import get_async_datacollector
+from serialx import SerialException
 
 from .const import (
     CONF_ENABLE_HISTORICAL,
@@ -47,7 +46,8 @@ async def validate_input(hass: HomeAssistant, data):
             get_async_datacollector, data[CONF_PORT], MODEL
         )
         # Quick connection test
-        await collector.connect()
+        if not await collector.connect():
+            raise SerialException(f"Could not open serial port {data[CONF_PORT]}")
 
     except SerialException as err:
         _LOGGER.error("Error connecting to OWL controller at %s: %s", data[CONF_PORT], err)
@@ -71,7 +71,7 @@ class OwlConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry) -> "OwlOptionsFlowHandler":
+    def async_get_options_flow(config_entry) -> OwlOptionsFlowHandler:
         """Return the options flow handler."""
         return OwlOptionsFlowHandler()
 
@@ -82,11 +82,12 @@ class OwlConfigFlow(ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             try:
-                info = await validate_input(self.hass, user_input)
-
-                # Check for existing entries with the same port
+                # Reject duplicates before opening a port owned by a loaded entry.
                 await self.async_set_unique_id(user_input[CONF_PORT])
                 self._abort_if_unique_id_configured()
+                if any(entry.data[CONF_PORT] == user_input[CONF_PORT] for entry in self._async_current_entries()):
+                    raise AbortFlow("already_configured")
+                info = await validate_input(self.hass, user_input)
 
                 return self.async_create_entry(
                     title=f"Energy OWL CM160 ({user_input[CONF_PORT]})",
@@ -102,6 +103,33 @@ class OwlConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user", data_schema=DATA_SCHEMA, errors=errors
+        )
+
+
+    async def async_step_reconfigure(self, user_input=None) -> ConfigFlowResult:
+        """Change the connection port while keeping the original device identity."""
+        entry = self._get_reconfigure_entry()
+        errors = {}
+        if user_input is not None:
+            if any(other.entry_id != entry.entry_id and other.data[CONF_PORT] == user_input[CONF_PORT]
+                   for other in self._async_current_entries()):
+                return self.async_abort(reason="already_configured")
+            try:
+                if user_input[CONF_PORT] != entry.data[CONF_PORT]:
+                    await validate_input(self.hass, user_input)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_update_and_abort(
+                    entry,
+                    data_updates={CONF_PORT: user_input[CONF_PORT],
+                                  "identity_port": entry.data.get("identity_port", entry.data[CONF_PORT])},
+                    reason="reconfigure_successful",
+                )
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema({vol.Required(CONF_PORT, default=entry.data[CONF_PORT]): str}),
+            errors=errors,
         )
 
 

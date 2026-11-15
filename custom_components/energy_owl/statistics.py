@@ -178,13 +178,20 @@ class OwlStatisticsImporter:
             and self._generation == self.coordinator.historical_sync_generation
         )
 
+    def diagnostics_snapshot(self) -> dict[str, bool | int | None]:
+        """Return import progress without exposing journal contents."""
+        return {"loaded": self._loaded, "closed": self._closed,
+                "processing": self._task is not None and not self._task.done(),
+                "complete": self.is_processing_complete(), "generation": self._generation,
+                "replay_pending": self._replay}
+
     def _voltage(self) -> float:
         # Historical records have no historical voltage. Freeze configured voltage,
         # rather than applying a varying live voltage to the same old download.
         return positive_number(self.entry.options.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
 
     def _metadata(self):
-        port = self.coordinator.port.replace("/", "-").replace("\\", "-")
+        port = self.entry.data.get("identity_port", self.coordinator.port).replace("/", "-").replace("\\", "-")
         return StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_sum=True,

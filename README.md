@@ -91,7 +91,11 @@ A restart reloads and replays the durable ledger before attempting a new device 
 
 ## Services
 
-All services target a specific device via `target: device_id`.
+All actions require exactly one Energy OWL device via `target: device_id`. Multiple targets and implicit defaults are rejected. Actions remain registered when entries are unloaded and report an error for an unloaded target. CSV export reports errors when no records are available or the file cannot be written.
+
+Use **Reconfigure** on the integration entry to change the serial port for the same CM160 adapter. Entity IDs, device identity, the combined statistics source and the stored energy ledger are retained. The protocol does not expose a verified hardware serial number; do not use reconfiguration to substitute a different meter.
+
+Current, power and live energy become unavailable when polling fails or the latest actual live packet is older than 90 seconds. Connection and history-sync progress remain available in diagnostics. The history status sensor uses translated `starting`, `syncing`, `complete` and `disconnected` states; record counts are attributes.
 
 ### `energy_owl.get_historical_data`
 
@@ -194,6 +198,13 @@ logger:
 ```
 
 ## Version History
+
+### v0.9.2
+- Reject failed serial connections instead of reporting false success, including during configuration.
+- Serialize polling and serial lifecycle operations; clean up cancelled and partially failed setup.
+- Add port reconfiguration while preserving device, entity, statistics and ledger identities.
+- Require one explicit device target for actions, validate loaded entries and propagate export failures.
+- Use fresh live measurements for availability; expose public diagnostics and translated sync status.
 
 ### v0.9.1
 - Removed historical state-table writes; historical and live energy now share a durable external statistics source.

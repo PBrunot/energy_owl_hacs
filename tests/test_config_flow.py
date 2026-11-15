@@ -23,7 +23,7 @@ from custom_components.energy_owl.const import (
 
 def _make_mock_collector():
     collector = MagicMock()
-    collector.connect = AsyncMock()
+    collector.connect = AsyncMock(return_value=True)
     collector.disconnect = AsyncMock()
     return collector
 
@@ -151,12 +151,13 @@ async def test_step_user_already_configured(hass):
         patch(
             "custom_components.energy_owl.config_flow.validate_input",
             return_value={CONF_PORT: "/dev/ttyUSB0"},
-        ),
+        ) as validate,
         pytest.raises(AbortFlow) as exc_info,
     ):
         await flow.async_step_user({CONF_PORT: "/dev/ttyUSB0"})
 
     assert exc_info.value.reason == "already_configured"
+    validate.assert_not_called()
 
 
 async def test_step_user_success_creates_entry(hass):
@@ -285,3 +286,15 @@ async def test_options_flow_retains_existing_voltage_entity(hass):
             break
     else:
         pytest.fail(f"{CONF_VOLTAGE_ENTITY!r} key not found in options schema")
+
+
+async def test_validate_input_false_connection_result(hass):
+    """A library connection refusal must reject the port and clean up."""
+    collector = _make_mock_collector()
+    collector.connect.return_value = False
+    with (
+        patch("custom_components.energy_owl.config_flow.get_async_datacollector", return_value=collector),
+        pytest.raises(CannotConnect),
+    ):
+        await validate_input(hass, {CONF_PORT: "/dev/missing"})
+    collector.disconnect.assert_awaited_once()

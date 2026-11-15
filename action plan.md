@@ -1,8 +1,8 @@
-# Energy OWL action plan: 0.9.1
+# Energy OWL action plan: 0.9.2
 
 ## Current status
 
-All eleven Priority 1 items are implemented. Version metadata and release notes are prepared for **0.9.1**. Priority 2/3 improvements from the original review remain separate follow-up work. The original review and earlier checkpoints are preserved below for context; their OPEN statuses are historical.
+All eleven Priority 1 items are implemented. Version metadata and release notes are prepared for **0.9.2**. Priority 2 lifecycle and structure improvements are now implemented and validated below. Priority 3 remains follow-up work. The original review and earlier checkpoints are preserved below for context; their OPEN statuses are historical.
 
 | Priority 1 item | Completed solution |
 | --- | --- |
@@ -17,6 +17,27 @@ All eleven Priority 1 items are implemented. Version metadata and release notes 
 | 9 Continuity and overlap | One external combined history/live source; historical minutes replace overlapping live estimates; cumulative sums recomputed deterministically, preserved across restart |
 | 10 Measurement assumptions | Fixed historical voltage frozen per accepted minute; valid converted live volts/fallback; unity power factor and missing-measurement limits explicitly documented |
 | 11 Durability | Atomic HA Store ledger BEFORE device acknowledgement; replay independent of device availability, idempotent upserts, retained hourly baseline; 35 days of minute detail plus immutable archived hourly totals |
+
+## Priority 2 completion (2026-11-15)
+
+- Structure: setup/unload remain in `__init__.py`, serial acquisition and lifecycle in coordinator, statistics in `statistics.py`, integration in `energy.py`, actions moved to `services.py`.
+- Lifecycle: setup cancellation and platform-forwarding failures close importers/connections; partial platforms are rolled back, with serial cleanup even if rollback fails. Entry-owned import tasks cancel and await shutdown (Priority 1).
+- Serialization: a complete poll, manual reset/reconnect, automatic recovery and importer reads use the serial lifecycle lock. Old collectors close before replacement. Session resets also clear record count and visible cached measurements.
+- Configuration: duplicate ports are rejected before serial validation. Reconfigure changes the connection port while retaining original device/entity/statistics identity and entry-owned ledger. Existing update listener reloads the entry once after the change.
+- Availability: current, power and live energy require successful polling, a connection, a nonmissing measurement and an actual packet at most 90 seconds old. Sync/connection diagnostics stay separate.
+- Actions: registered in `async_setup`, retained without loaded entries, runtime schemas, `SupportsResponse.OPTIONAL`, exactly one explicit device target, domain/loaded-entry checks, translated validation/runtime errors. CSV empty data and write failures raise action errors.
+- Diagnostics: public typed coordinator snapshot, importer progress snapshot and installed owlsensor/serialx versions. Changing collector counters no longer appear on each measurement entity.
+- Status: enum keys with translated labels; record counts exposed as attributes.
+- Identity investigation: the pinned protocol/library does not provide a verified immutable hardware identifier. Reconfiguration explicitly applies to the same adapter and freezes its original port-based identity; no speculative hardware-ID migration is performed.
+- Validation: **125 tests passed on HA 2026.5.2 and 125 on HA 2026.10.4**, Python 3.14.2 in WSL. New coverage includes real integration-loader setup/unload, action validation/errors, poll/reset serialization, setup cancellation/rollback failure, freshness and reconfiguration continuity. Runtime Ruff checks, focused lint on new test modules, component JSON parsing and `git diff --check` pass.
+- No physical adapter or production database tested; no commit, push or release performed for Priority 2.
+
+## Release 0.9.2 follow-up
+
+- User reviewed 0.9.1 on a live device: 39,534 historical records collected, import completion before acknowledgement and subsequent live readings observed. No Recorder error shown; database commit and restart replay cannot be established from that log alone.
+- Fixed the observed false-success defect: both coordinator connection and config validation reject a false return from the pinned library's `connect()`.
+- 128 tests pass on each supported HA stack (2026.5.2 and 2026.10.4); runtime lint and diff checks pass.
+- 0.9.2 includes the Priority 2 work above. Physical validation of this new version remains outstanding.
 
 ## Validation
 
@@ -45,13 +66,13 @@ All eleven Priority 1 items are implemented. Version metadata and release notes 
 
 1. Complete final checks on both HA stacks; inspect the staged diff.
 2. Commit all requested work and release notes with the repository's established author identity.
-3. Create annotated tag v0.9.1 on that commit; push main and the tag without force.
-4. Publish GitHub release v0.9.1 using RELEASE_NOTES.md and verify the release/tag target.
+3. Create annotated tag v0.9.2 on that commit; push main and the tag without force.
+4. Publish GitHub release v0.9.2 using RELEASE_NOTES.md and verify the release/tag target.
 5. Record final commit SHA and release URL here or in the final response.
 
 ## Publishing access
 
-GitHub authentication was restored by the user and verified with GitHub CLI and a dry-run Git push. Publish only after final checks; use main and annotated tag v0.9.1 without force. Repository author identity is Pascal Brunot, matching existing commits.
+GitHub authentication was restored by the user and verified with GitHub CLI and a dry-run Git push. Publish only after final checks; use main and annotated tag v0.9.2 without force. Repository author identity is Pascal Brunot, matching existing commits.
 
 ## Sources added during completion
 

@@ -11,6 +11,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import callback
+from homeassistant.util import dt as dt_util
 
 from .base_entity import OwlEntity
 from .coordinator import OwlDataUpdateCoordinator
@@ -61,7 +62,13 @@ class OwlEnergySensor(OwlEntity, RestoreSensor):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.last_update_success and self.coordinator.connected
+        data = self.coordinator.data or {}
+        timestamp = data.get("sample_timestamp")
+        return bool(
+            self.coordinator.last_update_success and self.coordinator.connected
+            and data.get("current") is not None and timestamp is not None
+            and 0 <= (dt_util.utcnow() - timestamp).total_seconds() <= 90
+        )
 
     @property
     def native_value(self) -> float:
