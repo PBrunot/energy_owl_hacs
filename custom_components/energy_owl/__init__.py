@@ -12,10 +12,13 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
+    CONF_ENABLE_HISTORICAL,
     CONF_NOT_FIRST_RUN,
+    DEFAULT_ENABLE_HISTORICAL,
     DOMAIN,
 )
 from .coordinator import OwlDataUpdateCoordinator
+from .statistics import OwlStatisticsImporter
 
 PLATFORMS = [Platform.SENSOR]
 
@@ -27,6 +30,7 @@ class EnergyOwlData:
     """Runtime data for Energy OWL integration."""
 
     coordinator: OwlDataUpdateCoordinator
+    importer: OwlStatisticsImporter | None = None
 
 
 type EnergyOwlConfigEntry = ConfigEntry[EnergyOwlData]
@@ -37,12 +41,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnergyOwlConfigEntry) ->
     port = entry.data[CONF_PORT]
 
     coordinator = OwlDataUpdateCoordinator(hass, port)
+    importer = None
+    if entry.options.get(CONF_ENABLE_HISTORICAL, DEFAULT_ENABLE_HISTORICAL):
+        importer = OwlStatisticsImporter(hass, entry, coordinator)
 
     try:
+        if importer:
+            await importer.async_load()
         await coordinator.async_config_entry_first_refresh()
     except ConfigEntryNotReady:
+        if importer:
+            await importer.async_close()
+        await coordinator.async_disconnect()
         raise
     except Exception as err:
+        if importer:
+            await importer.async_close()
+        await coordinator.async_disconnect()
         _LOGGER.error("Error setting up OWL coordinator for port %s: %s", port, err)
         raise ConfigEntryNotReady from err
 
@@ -55,10 +70,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnergyOwlConfigEntry) ->
             "First run detected. Device will send historical data before real-time updates."
         )
 
-    entry.runtime_data = EnergyOwlData(coordinator=coordinator)
+    entry.runtime_data = EnergyOwlData(coordinator=coordinator, importer=importer)
     entry.async_on_unload(entry.add_update_listener(_update_listener))
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        if importer:
+            importer.start()
+    except Exception:
+        if importer:
+            await importer.async_close()
+        await coordinator.async_disconnect()
+        raise
     await _register_services(hass)
 
     return True
@@ -76,6 +99,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: EnergyOwlConfigEntry) -
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        if entry.runtime_data.importer:
+            await entry.runtime_data.importer.async_close()
         await entry.runtime_data.coordinator.async_disconnect()
         # Unregister services when the last entry is removed so stale handlers are gone.
         remaining = [

@@ -46,9 +46,6 @@
       },
       "historical_data_status": {
         "name": "Historical Data Status"
-      },
-      "historical_data_processor": {
-        "name": "Historical Data Processor"
       }
     }
   }

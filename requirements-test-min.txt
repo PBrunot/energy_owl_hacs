@@ -1,0 +1,2 @@
+pytest-homeassistant-custom-component==0.13.331
+owlsensor==0.7.2

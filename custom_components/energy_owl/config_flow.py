@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from owlsensor import get_async_datacollector
-from serial import SerialException
+from serialx import SerialException
 import voluptuous as vol
 
 from homeassistant.config_entries import (

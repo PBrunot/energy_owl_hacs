@@ -20,8 +20,8 @@ custom_components/energy_owl/
 
 ## Key Dependencies
 
-- **owlsensor**: External Python library (v0.4.2) that handles CM160 serial communication
-- **Home Assistant Core**: Minimum version 2024.11.0
+- **owlsensor**: External Python library (pinned v0.7.2) that handles CM160 serial communication
+- **Home Assistant Core**: Minimum version 2026.5.2
 - **Serial communication**: Uses Python's `serial` library for USB/COM port access
 
 ## Core Architecture
@@ -63,3 +63,17 @@ custom_components/energy_owl/
 - No ZIP releases - direct repository integration
 - README rendering enabled for HACS store display
 - remember that HA is running on a different machine, ask the user if you need tests and logs.
+
+## Current 0.9.1 architecture
+
+See action plan.md for the full review and current completion status.
+The integration exposes live current/power/energy and a diagnostic sync sensor.
+An entry-owned OwlStatisticsImporter maintains a durable EnergyLedger in HA Store
+and submits combined historical/live energy through async_add_external_statistics.
+Never write historical states or modify Recorder tables directly.
+collector.py subclasses the pinned owlsensor packet parser to timestamp live packet
+receipt; energy.py handles finite measurements, device-local timestamps and bounded
+interval integration. The fixed historical minute convention and power-factor
+assumptions are documented in README.md.
+Run both requirements-test.txt (HA 2026.10.4) and requirements-test-min.txt
+(HA 2026.5.2) with Python 3.14. Real owlsensor is installed for API compatibility tests.

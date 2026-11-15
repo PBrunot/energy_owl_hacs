@@ -3,18 +3,15 @@
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    CONF_VOLTAGE,
-    CONF_VOLTAGE_ENTITY,
-    DEFAULT_VOLTAGE,
     DOMAIN,
     VERSION,
 )
 from .coordinator import OwlDataUpdateCoordinator
+from .energy import resolve_voltage
 
 
 class OwlEntity(CoordinatorEntity):
@@ -23,25 +20,19 @@ class OwlEntity(CoordinatorEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: OwlDataUpdateCoordinator, config_entry: ConfigEntry
+    ) -> None:
         """Initialize the entity."""
         super().__init__(coordinator)
         self.config_entry = config_entry
         port = config_entry.data.get("port", "unknown")
-        port_safe = str.replace(port, '/', '-').replace('\\', '-')
+        port_safe = str.replace(port, "/", "-").replace("\\", "-")
         self._device_unique_id = f"CM160-{port_safe}-v2"
 
     def _get_voltage(self) -> float:
         """Return grid voltage from a HA entity state or the configured default."""
-        entity_id = self.config_entry.options.get(CONF_VOLTAGE_ENTITY)
-        if entity_id:
-            state = self.hass.states.get(entity_id)
-            if state and state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-                try:
-                    return float(state.state)
-                except (ValueError, TypeError):
-                    pass
-        return float(self.config_entry.options.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
+        return resolve_voltage(self.hass, self.config_entry.options)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -66,8 +57,12 @@ class OwlEntity(CoordinatorEntity):
             "last_error": self.coordinator.data.get("last_error"),
             "error_count": self.coordinator.data.get("error_count", 0),
             "total_updates": self.coordinator.data.get("total_updates", 0),
-            "historical_data_complete": self.coordinator.data.get("historical_data_complete", False),
-            "historical_data_count": self.coordinator.data.get("historical_data_count", 0),
+            "historical_data_complete": self.coordinator.data.get(
+                "historical_data_complete", False
+            ),
+            "historical_data_count": self.coordinator.data.get(
+                "historical_data_count", 0
+            ),
         }
 
         debug_info = self.coordinator.data.get("debug_info")

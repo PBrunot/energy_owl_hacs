@@ -11,7 +11,7 @@ from custom_components.energy_owl.const import CONF_NOT_FIRST_RUN, DOMAIN
 
 # All tests call async_setup_entry / async_unload_entry directly to avoid
 # going through HA's integration loader (which would fail in CI without the
-# real owlsensor / homeassistant-historical-sensor packages installed).
+# real owlsensor package installed).
 
 
 async def _setup(hass, entry, mock_coordinator):
@@ -164,3 +164,51 @@ async def test_unload_entry_keeps_services_when_other_entries_exist(hass, mock_c
 
     # Services must still be registered
     assert hass.services.has_service(DOMAIN, "get_historical_data"), "Service removed too early"
+
+
+async def test_importer_registered_before_first_refresh(hass, mock_config_entry, mock_coordinator):
+    async def first_refresh():
+        mock_coordinator.register_historical_pusher.assert_called_once()
+
+    mock_coordinator.async_config_entry_first_refresh.side_effect = first_refresh
+    await _setup(hass, mock_config_entry, mock_coordinator)
+    assert mock_config_entry.runtime_data.importer is not None
+    await mock_config_entry.runtime_data.importer.async_close()
+
+
+async def test_import_disabled_has_no_importer(hass, mock_config_entry, mock_coordinator):
+    from custom_components.energy_owl.const import CONF_ENABLE_HISTORICAL
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(mock_config_entry, options={CONF_ENABLE_HISTORICAL: False})
+    with (
+        patch("custom_components.energy_owl.OwlDataUpdateCoordinator", return_value=mock_coordinator),
+        patch.object(hass.config_entries, "async_forward_entry_setups", new=AsyncMock()),
+    ):
+        await async_setup_entry(hass, mock_config_entry)
+    assert mock_config_entry.runtime_data.importer is None
+    mock_coordinator.register_historical_pusher.assert_not_called()
+
+
+async def test_platform_setup_failure_cleans_importer(hass, mock_config_entry, mock_coordinator):
+    mock_config_entry.add_to_hass(hass)
+    with (
+        patch("custom_components.energy_owl.OwlDataUpdateCoordinator", return_value=mock_coordinator),
+        patch.object(hass.config_entries, "async_forward_entry_setups", side_effect=RuntimeError("platform failed")),
+    ):
+        with pytest.raises(RuntimeError, match="platform failed"):
+            await async_setup_entry(hass, mock_config_entry)
+    mock_coordinator.unregister_historical_pusher.assert_called_once()
+    mock_coordinator.async_disconnect.assert_awaited_once()
+
+
+async def test_unload_closes_importer_before_disconnect(hass, mock_config_entry, mock_coordinator):
+    mock_config_entry.add_to_hass(hass)
+    importer = AsyncMock()
+    mock_config_entry.runtime_data = EnergyOwlData(coordinator=mock_coordinator, importer=importer)
+
+    async def disconnect():
+        importer.async_close.assert_awaited_once()
+
+    mock_coordinator.async_disconnect.side_effect = disconnect
+    with patch.object(hass.config_entries, "async_unload_platforms", return_value=True):
+        assert await async_unload_entry(hass, mock_config_entry)

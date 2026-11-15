@@ -55,7 +55,7 @@ Open the integration's **Configure** menu to adjust:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| Import historical data | Enabled | Enables the Historical Data Processor entity that pushes CM160 records into HA statistics. Disable to reduce database load if past data is not needed. |
+| Import historical data | Enabled | Enables a durable combined history/live estimated energy statistics source through HA Recorder's API. Disable to reduce database load if past data is not needed. |
 | Voltage entity | _(none)_ | HA sensor entity providing live grid voltage (e.g. from a smart meter). Takes priority over the fixed voltage below. |
 | Default voltage | 230 V | Grid voltage used for power and energy calculations when no voltage entity is set. Typical: 230 V (Europe), 120 V (North America). |
 
@@ -67,20 +67,25 @@ All entities belong to a single **Energy OWL CM160 (`<port>`)** device.
 |--------|------|-------|-------|
 | Current | A | Measurement | Real-time current from the CM160 (~15 s interval) |
 | Power | W | Measurement | Current × configured voltage, updated in sync with current |
-| Energy | kWh | Total increasing | Cumulative energy, persists across HA restarts; back-filled from CM160 history on first sync |
+| Energy | kWh | Total increasing | Live cumulative estimate; restored across restarts, skips stale samples and gaps. See the combined statistics source below. |
 | Historical Data Status | — | Diagnostic (disabled) | Shows sync progress: `Starting sync` → `Syncing (N records)` → `Complete` |
-| Historical Data Processor | A | — | Optional; created only when **Import historical data** is enabled. Pushes CM160 historical records into HA's long-term statistics. |
 
 > **Note**: During the initial historical data transmission (which can take 5–10 minutes), the Current and Power sensors show no value. The Historical Data Status sensor reflects progress. Real-time updates begin after the sync completes.
 
 ## Energy Dashboard
 
-The **Energy** sensor is a cumulative kWh sensor compatible with HA's Energy Dashboard. No template helper or Riemann-sum integration is required.
+The **Energy** sensor remains a live-only cumulative estimate with its existing entity ID.
+With **Import historical data** enabled, select **Energy OWL CM160 (<port>) Estimated Energy**
+(the statistic ID begins `energy_owl:cm160_`) for a single continuous history/live
+source. Do not select both sources for the same meter: their live periods overlap.
+When the option is disabled, select the live **Energy** sensor instead; the combined
+source stops receiving updates until the option is enabled again.
 
-1. Go to **Settings → Dashboards → Energy**.
-2. Under **Electricity grid**, click **Add consumption** and select **Energy OWL CM160 … Energy**.
-
-If **Import historical data** is enabled, the integration back-fills hourly energy statistics from the CM160's internal memory (typically 30 days) the first time it connects. These statistics appear in the Energy Dashboard automatically.
+The combined source records each observed historical minute and bounded live sample
+interval exactly once. Historical minutes replace overlapping live estimates; repeated
+downloads retain the first accepted voltage estimate for a minute. Earlier imports
+recompute subsequent cumulative sums, so the live continuation uses the same baseline.
+A restart reloads and replays the durable ledger before attempting a new device import.
 
 ![Home Assistant Integration](https://github.com/user-attachments/assets/20e1dcac-2248-4dd1-9a46-9dbcfda59633)
 
@@ -190,6 +195,13 @@ logger:
 
 ## Version History
 
+### v0.9.1
+- Removed historical state-table writes; historical and live energy now share a durable external statistics source.
+- Corrected history from full-hour extrapolation to observed one-minute intervals, including duplicate, overlap and DST handling.
+- Added live packet receipt timestamps, stale-data/gap protection and safe restored baselines.
+- Added atomic storage before acknowledgement and idempotent startup replay.
+- Fixed serial exception imports for owlsensor's serialx dependency; aligned HACS minimum HA to 2026.5.2.
+
 ### v0.9.0
 - Added `icons.json`: integration tile shows `mdi:meter-electric`; service icons added.
 - README rewritten with accurate feature documentation.
@@ -251,3 +263,45 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 **Need help?** [Open an issue](https://github.com/PBrunot/energy_owl_hacs/issues).
+
+## Historical import safety and measurement assumptions
+
+Version 0.9.1 uses HA's statistics API exclusively. It removes the historical state
+writer and its dependency. Old Historical Data Processor registry entries may be
+removed manually. Live entity IDs remain unchanged; the combined statistics source
+uses the valid `energy_owl:cm160_<port>_v2_energy` form.
+
+The entry owns the importer, including when sensor entities are disabled. Validated
+minute records and live intervals are saved atomically under HA's `.storage` before
+statistics are queued or device history is acknowledged. If storage fails, the device
+buffer is retained. If Recorder submission fails or the process exits before commit,
+the durable ledger is replayed on the next update/startup. Submission is not itself a
+commit acknowledgement. Do not delete the integration's storage files unless you
+intend to reset its accounting baseline; include them in HA backups.
+
+The [CM160 manual](https://www.theowl.com/files/8514/0074/5366/CM160-001UK_UM_R7.pdf)
+specifies one stored record per minute. We estimate that minute's energy using a
+rectangle over `[timestamp, timestamp + 60 seconds)`, rather than expanding a lone
+sample to a full hour. Missing minutes contribute no invented consumption. Identical
+duplicates collapse; conflicting duplicates fail the batch. Invalid/nonfinite records
+are skipped with a warning. Live packet receipt timestamps (the protocol provides no
+UTC timestamp for live packets) are used with a 90-second maximum sample gap. Polling
+the same cached packet adds no energy; disconnects, stale data and restarts reset the
+integration baseline. The first sample after any gap adds no energy.
+
+Device history has local wall-clock timestamps without an offset. The device clock
+must match HA's configured timezone. Ambiguous and nonexistent DST wall-clock minutes
+are skipped rather than guessed; explicitly offset timestamps remain distinguishable.
+UTC intervals are split across minute/hour boundaries before aggregation.
+
+Current times voltage assumes unity power factor: these are **estimated active power
+and energy**, not revenue-grade measurements of real power. Historical estimates use
+the configured fixed voltage because historical voltage is unavailable. Live estimates
+use a valid selected voltage sensor (converted to volts), otherwise the fixed voltage.
+The ledger retains 35 days of minute detail for the device's 30-day replay window and
+compacts older data into immutable hourly totals. Older replayed minutes cannot add
+energy twice. Late corrections outside that window are deliberately ignored.
+
+See [action plan.md](action%20plan.md) for implementation status and remaining
+Priority 2/3 improvements. Physical meter accuracy and gaps without measurements
+cannot be reconstructed by the integration.

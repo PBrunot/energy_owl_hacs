@@ -3,7 +3,6 @@ import pytest
 from homeassistant.const import EntityCategory
 
 from custom_components.energy_owl import EnergyOwlData
-from custom_components.energy_owl.base_entity import OwlEntity
 from custom_components.energy_owl.const import (
     CONF_VOLTAGE,
     CONF_VOLTAGE_ENTITY,
@@ -12,7 +11,6 @@ from custom_components.energy_owl.const import (
 )
 from custom_components.energy_owl.current_sensor import OwlCMSensor
 from custom_components.energy_owl.energy_sensor import OwlEnergySensor
-from custom_components.energy_owl.ha_historical_sensor import OwlHAHistoricalSensor
 from custom_components.energy_owl.historical_data_sensor import OwlHistoricalDataSensor
 from custom_components.energy_owl.power_sensor import OwlPowerSensor
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -22,53 +20,22 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 # ---------------------------------------------------------------------------
 
 
-def test_has_entity_name_defined_in_base():
-    assert OwlEntity.__dict__.get("__attr_has_entity_name") is True
+@pytest.mark.parametrize("sensor_class, translation_key", [
+    (OwlCMSensor, "current"),
+    (OwlPowerSensor, "power"),
+    (OwlEnergySensor, "energy"),
+    (OwlHistoricalDataSensor, "historical_data_status"),
+])
+def test_entity_naming(mock_coordinator, mock_config_entry, sensor_class, translation_key):
+    entity = sensor_class(mock_coordinator, mock_config_entry)
+    assert entity.has_entity_name is True
+    assert entity.translation_key == translation_key
 
 
-def test_current_sensor_translation_key():
-    assert OwlCMSensor.__dict__.get("__attr_translation_key") == "current"
-
-
-def test_power_sensor_translation_key():
-    assert OwlPowerSensor.__dict__.get("__attr_translation_key") == "power"
-
-
-def test_energy_sensor_translation_key():
-    assert OwlEnergySensor.__dict__.get("__attr_translation_key") == "energy"
-
-
-def test_historical_status_translation_key():
-    assert OwlHistoricalDataSensor.__dict__.get("__attr_translation_key") == "historical_data_status"
-
-
-def test_historical_processor_translation_key():
-    assert OwlHAHistoricalSensor.__dict__.get("__attr_translation_key") == "historical_data_processor"
-
-
-def test_no_deprecated_attr_name_on_any_sensor():
-    for cls in (OwlCMSensor, OwlPowerSensor, OwlEnergySensor, OwlHistoricalDataSensor, OwlHAHistoricalSensor):
-        assert "_attr_name" not in cls.__dict__, f"{cls.__name__} still defines deprecated _attr_name"
-
-
-def test_diagnostic_entity_categories():
-    assert OwlHistoricalDataSensor.__dict__.get("__attr_entity_category") == EntityCategory.DIAGNOSTIC
-
-
-def test_historical_diagnostic_disabled_by_default():
-    assert OwlHistoricalDataSensor.__dict__.get("__attr_entity_registry_enabled_default") is False
-
-
-def test_current_sensor_has_no_entity_category():
-    assert "_attr_entity_category" not in OwlCMSensor.__dict__
-
-
-def test_power_sensor_has_no_entity_category():
-    assert "_attr_entity_category" not in OwlPowerSensor.__dict__
-
-
-def test_energy_sensor_has_no_entity_category():
-    assert "_attr_entity_category" not in OwlEnergySensor.__dict__
+def test_diagnostic_defaults(mock_coordinator, mock_config_entry):
+    entity = OwlHistoricalDataSensor(mock_coordinator, mock_config_entry)
+    assert entity.entity_category == EntityCategory.DIAGNOSTIC
+    assert entity.entity_registry_enabled_default is False
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +43,8 @@ def test_energy_sensor_has_no_entity_category():
 # ---------------------------------------------------------------------------
 
 
-async def test_sensor_platform_creates_five_entities(hass, mock_config_entry, mock_coordinator):
-    """With historical import enabled (default), five entities must be created."""
+async def test_sensor_platform_creates_four_entities(hass, mock_config_entry, mock_coordinator):
+    """With historical import enabled (default), four entities must be created."""
     from custom_components.energy_owl.sensor import async_setup_entry as sensor_setup
 
     mock_config_entry.add_to_hass(hass)
@@ -86,9 +53,9 @@ async def test_sensor_platform_creates_five_entities(hass, mock_config_entry, mo
     entities: list = []
     await sensor_setup(hass, mock_config_entry, entities.extend)
 
-    assert len(entities) == 5
+    assert len(entities) == 4
     types = {type(e).__name__ for e in entities}
-    assert types == {"OwlCMSensor", "OwlPowerSensor", "OwlEnergySensor", "OwlHistoricalDataSensor", "OwlHAHistoricalSensor"}
+    assert types == {"OwlCMSensor", "OwlPowerSensor", "OwlEnergySensor", "OwlHistoricalDataSensor"}
 
 
 async def test_sensor_platform_creates_four_entities_when_historical_disabled(hass, mock_coordinator):
@@ -117,7 +84,7 @@ async def test_sensor_platform_creates_four_entities_when_historical_disabled(ha
 
 
 async def test_sensor_unique_ids_are_distinct(hass, mock_config_entry, mock_coordinator):
-    """All five sensors must have distinct unique_ids."""
+    """All four sensors must have distinct unique_ids."""
     from custom_components.energy_owl.sensor import async_setup_entry as sensor_setup
 
     mock_config_entry.add_to_hass(hass)
@@ -133,7 +100,6 @@ async def test_sensor_unique_ids_are_distinct(hass, mock_config_entry, mock_coor
     assert any("power" in uid for uid in unique_ids)
     assert any("energy" in uid for uid in unique_ids)
     assert any("historical-status" in uid for uid in unique_ids)
-    assert any("historical-processor" in uid for uid in unique_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +221,7 @@ def test_energy_sensor_reflects_accumulated_total(mock_coordinator, mock_config_
     assert sensor.native_value == pytest.approx(3.7)
 
 
-def test_energy_sensor_extra_attrs_contains_voltage_and_backfill(mock_coordinator, mock_config_entry):
+def test_energy_sensor_extra_attrs_contains_voltage(mock_coordinator, mock_config_entry):
     sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
     attrs = sensor.extra_state_attributes
     assert "voltage_used_v" in attrs
-    assert "historical_backfill_done" in attrs
-    assert attrs["historical_backfill_done"] is False

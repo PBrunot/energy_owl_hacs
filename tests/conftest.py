@@ -1,14 +1,9 @@
 """Pytest configuration and fixtures for energy_owl tests."""
-import sys
 from unittest.mock import AsyncMock, MagicMock
 
 # ---------------------------------------------------------------------------
-# Mock external libraries BEFORE any component module is imported.
+# Mock collector fixture; the real owlsensor package is installed for API coverage.
 # ---------------------------------------------------------------------------
-
-_mock_serial = MagicMock()
-_mock_serial.SerialException = Exception
-sys.modules.setdefault("serial", _mock_serial)
 
 _mock_collector = MagicMock()
 _mock_collector.connect = AsyncMock()
@@ -17,42 +12,6 @@ _mock_collector.get_current = MagicMock(return_value=1.5)
 _mock_collector.get_historical_data = MagicMock(return_value=[])
 _mock_collector.is_historical_data_complete = MagicMock(return_value=True)
 _mock_collector.clear_historical_data = MagicMock()
-
-_mock_owlsensor = MagicMock()
-_mock_owlsensor.CMDataCollector = MagicMock
-_mock_owlsensor.get_async_datacollector = MagicMock(return_value=_mock_collector)
-sys.modules.setdefault("owlsensor", _mock_owlsensor)
-
-
-class _MockHistoricalSensor:
-    _attr_historical_states = []
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    async def async_write_ha_historical_states(self):
-        pass
-
-    async def async_update_historical(self):
-        pass
-
-
-class _MockPollUpdateMixin:
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-
-class _MockHistoricalState:
-    def __init__(self, state, dt):
-        self.state = state
-        self.dt = dt
-
-
-_mock_ha_hist = MagicMock()
-_mock_ha_hist.HistoricalSensor = _MockHistoricalSensor
-_mock_ha_hist.PollUpdateMixin = _MockPollUpdateMixin
-_mock_ha_hist.HistoricalState = _MockHistoricalState
-sys.modules.setdefault("homeassistant_historical_sensor", _mock_ha_hist)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -118,6 +77,9 @@ def mock_coordinator(coordinator_data):
     coordinator.register_realtime_listener = MagicMock()
     coordinator.unregister_historical_pusher = MagicMock()
     coordinator.unregister_realtime_listener = MagicMock()
+    coordinator.port = "/dev/ttyUSB0"
+    coordinator.historical_sync_acknowledged = False
+    coordinator.historical_sync_generation = 0
     coordinator.get_historical_data = AsyncMock(return_value=[])
     coordinator.notify_pusher_complete = AsyncMock()
     return coordinator

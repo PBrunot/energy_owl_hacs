@@ -191,3 +191,55 @@ async def test_reset_historical_data_clears_state(hass):
     assert coordinator._historical_data_count == 0
     assert coordinator._last_historical_check == 0
     collector.clear_historical_data.assert_called_once()
+
+
+async def test_failed_acknowledgement_can_be_retried(hass):
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+    collector = _make_collector()
+    collector.clear_historical_data.side_effect = [RuntimeError("serial failure"), None]
+    coordinator = _prep_coordinator(hass, collector=collector, historical_complete=True)
+    pusher = MagicMock()
+    pusher.is_processing_complete.return_value = True
+    coordinator.register_historical_pusher(pusher)
+    with pytest.raises(UpdateFailed):
+        await coordinator.notify_pusher_complete(pusher)
+    assert not coordinator.historical_sync_acknowledged
+    await coordinator.notify_pusher_complete(pusher)
+    assert coordinator.historical_sync_acknowledged
+    assert collector.clear_historical_data.call_count == 2
+
+
+async def test_strict_historical_read_propagates_error(hass):
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+    collector = _make_collector()
+    collector.get_historical_data.side_effect = RuntimeError("serial failure")
+    coordinator = _prep_coordinator(hass, collector=collector)
+    with pytest.raises(UpdateFailed):
+        await coordinator.get_historical_data(strict=True)
+    collector.clear_historical_data.assert_not_called()
+
+
+async def test_live_fallback_preserves_history_for_importer(hass):
+    collector = _make_collector(complete=False)
+    collector.get_current.return_value = 1.5
+    coordinator = _prep_coordinator(hass, collector=collector)
+    pusher = MagicMock()
+    pusher.is_processing_complete.return_value = False
+    coordinator.register_historical_pusher(pusher)
+    result = await coordinator._async_update_data()
+    assert result["historical_data_complete"]
+    collector.clear_historical_data.assert_not_called()
+
+
+async def test_reset_invalidates_snapshot_before_clear_completes(hass):
+    collector = _make_collector()
+    coordinator = _prep_coordinator(hass, collector=collector, historical_complete=True)
+    generation = coordinator.historical_sync_generation
+
+    def clear():
+        assert coordinator.historical_sync_generation != generation
+        assert not coordinator.historical_data_complete
+
+    collector.clear_historical_data.side_effect = clear
+    await coordinator.async_reset_historical_data()
+    assert not coordinator.historical_sync_acknowledged

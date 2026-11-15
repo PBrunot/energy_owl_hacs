@@ -1,321 +1,184 @@
-"""Tests for OwlEnergySensor: accumulation, backfill logic, hourly statistics builder."""
-import time
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+"""Energy accounting: observed minutes and bounded live sample intervals."""
+
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.energy_owl.const import DOMAIN
-from custom_components.energy_owl.energy_sensor import OwlEnergySensor, _build_hourly_statistics
-
-# ---------------------------------------------------------------------------
-# _build_hourly_statistics — pure function, no hass needed
-# ---------------------------------------------------------------------------
-
-UTC = timezone.utc
-
-
-def test_build_empty_input():
-    assert _build_hourly_statistics([], 230.0) == []
+from custom_components.energy_owl.energy import (
+    EnergyInterval,
+    LiveEnergyIntegrator,
+    history_intervals,
+)
+from custom_components.energy_owl.energy_sensor import OwlEnergySensor
+from custom_components.energy_owl.statistics import (
+    EnergyLedger,
+    _build_hourly_statistics,
+)
 
 
-def test_build_single_record():
-    """One record in hour 10 → single bucket, sum = avg_current × voltage ÷ 1000."""
-    records = [{"timestamp": datetime(2024, 1, 1, 10, 30, tzinfo=UTC), "current": 2.0}]
-    stats = _build_hourly_statistics(records, 230.0)
+def test_history_one_minute_not_one_hour():
+    record = {"timestamp": datetime(2024, 1, 1, 10, 30, tzinfo=UTC), "current": 2}
+    assert _build_hourly_statistics([record], 230)[0]["sum"] == pytest.approx(0.46 / 60)
 
+
+def test_history_missing_minutes_and_duplicates():
+    records = [
+        {"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 2},
+        {"timestamp": datetime(2024, 1, 1, 10, 59, tzinfo=UTC), "current": 2},
+    ]
+    stats = _build_hourly_statistics(records + records, 230)
     assert len(stats) == 1
-    assert stats[0]["start"] == datetime(2024, 1, 1, 10, 0, tzinfo=UTC)
-    # 2.0 A × 230 V × 1 h ÷ 1000 = 0.46 kWh
-    assert stats[0]["sum"] == pytest.approx(0.46, rel=1e-3)
+    assert stats[0]["sum"] == pytest.approx(0.46 * 2 / 60)
 
 
-def test_build_multiple_records_same_hour_averaged():
-    """Multiple records in the same hour → average current, single bucket."""
-    records = [
-        {"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 2.0},
-        {"timestamp": datetime(2024, 1, 1, 10, 15, tzinfo=UTC), "current": 4.0},
-        {"timestamp": datetime(2024, 1, 1, 10, 30, tzinfo=UTC), "current": 6.0},
-    ]
-    stats = _build_hourly_statistics(records, 230.0)
-
-    assert len(stats) == 1
-    # avg = 4.0, 4.0 × 230 ÷ 1000 = 0.92 kWh
-    assert stats[0]["sum"] == pytest.approx(0.92, rel=1e-3)
+def test_conflicting_duplicates_fail_batch():
+    t = datetime(2024, 1, 1, tzinfo=UTC)
+    with pytest.raises(ValueError, match="Conflicting"):
+        history_intervals(
+            [{"timestamp": t, "current": 1}, {"timestamp": t, "current": 2}], 230
+        )
 
 
-def test_build_cumulative_sum():
-    """Sum must be strictly cumulative across hours (TOTAL_INCREASING semantics)."""
-    records = [
-        {"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 2.0},
-        {"timestamp": datetime(2024, 1, 1, 11, 0, tzinfo=UTC), "current": 2.0},
-        {"timestamp": datetime(2024, 1, 1, 12, 0, tzinfo=UTC), "current": 2.0},
-    ]
-    stats = _build_hourly_statistics(records, 230.0)
-
-    assert len(stats) == 3
-    # Each hour: 2.0 × 230 ÷ 1000 = 0.46 kWh
-    assert stats[0]["sum"] == pytest.approx(0.46, rel=1e-3)
-    assert stats[1]["sum"] == pytest.approx(0.92, rel=1e-3)
-    assert stats[2]["sum"] == pytest.approx(1.38, rel=1e-3)
-    # Monotonically increasing
-    assert stats[0]["sum"] < stats[1]["sum"] < stats[2]["sum"]
+def test_naive_device_clock_uses_ha_timezone_and_rejects_dst_folds():
+    with patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("Europe/Rome")):
+        intervals, rejected = history_intervals(
+            [
+                {"timestamp": datetime(2024, 1, 1, 12), "current": 1},
+                {"timestamp": datetime(2024, 10, 27, 2, 30), "current": 1},
+                {"timestamp": datetime(2024, 3, 31, 2, 30), "current": 1},
+            ],
+            230,
+        )
+    assert intervals[0].start == datetime(2024, 1, 1, 11, tzinfo=UTC)
+    assert len(intervals) == 1
+    assert rejected == 2
 
 
-def test_build_skips_invalid_current():
-    """Records with non-numeric current must be silently skipped."""
-    records = [
-        {"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": "bad"},
-        {"timestamp": datetime(2024, 1, 1, 10, 15, tzinfo=UTC), "current": 2.0},
-    ]
-    stats = _build_hourly_statistics(records, 230.0)
-
-    assert len(stats) == 1
-    # Only the valid record counts; avg = 2.0
-    assert stats[0]["sum"] == pytest.approx(0.46, rel=1e-3)
-
-
-def test_build_voltage_scales_linearly():
-    """Doubling the voltage must double the kWh result."""
-    records = [{"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 2.0}]
-    stats_230 = _build_hourly_statistics(records, 230.0)
-    stats_460 = _build_hourly_statistics(records, 460.0)
-
-    assert stats_460[0]["sum"] == pytest.approx(stats_230[0]["sum"] * 2, rel=1e-6)
+def test_aware_dst_repeated_hour_is_two_distinct_utc_hours():
+    zone = ZoneInfo("Europe/Rome")
+    stats = _build_hourly_statistics(
+        [
+            {
+                "timestamp": datetime(2024, 10, 27, 2, 30, tzinfo=zone, fold=0),
+                "current": 1,
+            },
+            {
+                "timestamp": datetime(2024, 10, 27, 2, 30, tzinfo=zone, fold=1),
+                "current": 1,
+            },
+        ],
+        230,
+    )
+    assert [s["start"].hour for s in stats] == [0, 1]
+    assert stats[-1]["sum"] == pytest.approx(0.23 * 2 / 60)
 
 
-def test_build_hour_start_truncated_to_minute_zero():
-    """start in each StatisticData must have minute=0, second=0."""
-    records = [
-        {"timestamp": datetime(2024, 1, 1, 10, 47, 33, tzinfo=UTC), "current": 1.0},
-    ]
-    stats = _build_hourly_statistics(records, 230.0)
-
-    assert stats[0]["start"].minute == 0
-    assert stats[0]["start"].second == 0
+def test_partial_intervals_split_utc_hour_without_extrapolating():
+    ledger = EnergyLedger()
+    t = datetime(2024, 1, 1, 10, 59, 30, tzinfo=UTC)
+    ledger.add(EnergyInterval(t, t + timedelta(seconds=60), 3600))
+    stats = ledger.statistics()
+    assert [s["sum"] for s in stats] == pytest.approx([0.03, 0.06])
 
 
-def test_build_unsorted_input_is_ordered():
-    """Records provided out of order must produce correctly ordered statistics."""
-    records = [
-        {"timestamp": datetime(2024, 1, 1, 12, 0, tzinfo=UTC), "current": 1.0},
-        {"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 3.0},
-        {"timestamp": datetime(2024, 1, 1, 11, 0, tzinfo=UTC), "current": 2.0},
-    ]
-    stats = _build_hourly_statistics(records, 230.0)
-
-    assert len(stats) == 3
-    assert stats[0]["start"].hour == 10
-    assert stats[1]["start"].hour == 11
-    assert stats[2]["start"].hour == 12
+@pytest.mark.parametrize("gap", [0, -1, 91, 7200])
+def test_no_energy_for_duplicate_reversed_or_large_sample_gaps(gap):
+    live = LiveEnergyIntegrator()
+    t = dt_util.utcnow()
+    assert live.sample(2, 230, t, now=t) is None
+    new = t + timedelta(seconds=gap)
+    assert live.sample(10, 230, new, now=new) is None
 
 
-# ---------------------------------------------------------------------------
-# OwlEnergySensor._handle_coordinator_update — accumulation via callback
-# ---------------------------------------------------------------------------
+def test_live_uses_previous_power_and_stops_at_missing_data():
+    live = LiveEnergyIntegrator()
+    t = dt_util.utcnow()
+    live.sample(2, 230, t, now=t)
+    t2 = t + timedelta(seconds=30)
+    interval = live.sample(10, 240, t2, now=t2)
+    assert interval.kwh == pytest.approx(460 * 30 / 3600000)
+    live.sample(None, 230, None)
+    t3 = t2 + timedelta(seconds=30)
+    assert live.sample(10, 230, t3, now=t3) is None
 
 
-def _make_entry_no_options():
-    return MockConfigEntry(
-        domain=DOMAIN,
-        data={"port": "/dev/ttyUSB0"},
-        options={},
-        version=1,
+@pytest.mark.parametrize("current", [float("nan"), float("inf"), -1, None])
+def test_invalid_sample_resets_baseline(current):
+    live = LiveEnergyIntegrator()
+    t = dt_util.utcnow()
+    live.sample(2, 230, t, now=t)
+    assert (
+        live.sample(
+            current, 230, t + timedelta(seconds=1), now=t + timedelta(seconds=1)
+        )
+        is None
+    )
+    assert (
+        live.sample(2, 230, t + timedelta(seconds=2), now=t + timedelta(seconds=2))
+        is None
     )
 
 
-def _make_coordinator_data(current, historical_complete=False):
-    return {
-        "current": current,
-        "connected": True,
-        "last_error": None,
-        "error_count": 0,
-        "total_updates": 5,
-        "historical_data_complete": historical_complete,
-        "historical_data_count": 0,
-        "new_historical_records": [],
-        "debug_info": {},
-    }
+def test_cached_stale_sample_resets_baseline():
+    live = LiveEnergyIntegrator()
+    t = dt_util.utcnow()
+    live.sample(2, 230, t, now=t)
+    assert live.sample(2, 230, t, now=t + timedelta(minutes=5)) is None
+    new = t + timedelta(minutes=5)
+    assert live.sample(2, 230, new, now=new) is None
 
 
-async def test_energy_accumulates_over_one_hour(hass, mock_coordinator, mock_config_entry):
-    """2 A × 230 V over 1 hour must accumulate 0.46 kWh."""
+async def test_live_sensor_gap_and_first_sample_after_restore(
+    hass, mock_coordinator, mock_config_entry
+):
     sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
     sensor.hass = hass
-
-    now = dt_util.utcnow()
-    sensor._last_update = now - timedelta(hours=1)
-    mock_coordinator.data = _make_coordinator_data(current=2.0)
-
-    with patch.object(sensor, "async_write_ha_state"):
-        sensor._handle_coordinator_update()
-
-    assert sensor._total_kwh == pytest.approx(0.46, rel=1e-2)
-
-
-async def test_energy_accumulates_additive(hass, mock_coordinator, mock_config_entry):
-    """Energy must add up across multiple update cycles."""
-    sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
-    sensor.hass = hass
-
-    now = dt_util.utcnow()
-    mock_coordinator.data = _make_coordinator_data(current=2.0)
-
-    with patch.object(sensor, "async_write_ha_state"):
-        # First cycle: set baseline
-        sensor._last_update = now - timedelta(hours=1)
-        sensor._handle_coordinator_update()
-        after_first = sensor._total_kwh
-
-        # Second cycle: another hour (pretend 1h has passed since now)
-        sensor._last_update = now - timedelta(hours=1)
-        sensor._handle_coordinator_update()
-
-    # Should have doubled
-    assert sensor._total_kwh == pytest.approx(after_first * 2, rel=1e-2)
-
-
-async def test_energy_no_accumulation_on_first_update(hass, mock_coordinator, mock_config_entry):
-    """On the very first update (_last_update is None), energy must not jump."""
-    sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
-    sensor.hass = hass
-    assert sensor._last_update is None
-
-    mock_coordinator.data = _make_coordinator_data(current=5.0)
-
-    with patch.object(sensor, "async_write_ha_state"):
-        sensor._handle_coordinator_update()
-
-    assert sensor._total_kwh == pytest.approx(0.0)
-    assert sensor._last_update is not None  # timestamp was recorded
-
-
-async def test_energy_no_accumulation_when_current_none(hass, mock_coordinator, mock_config_entry):
-    """When current is None (historical sync phase), energy total must not change."""
-    sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
-    sensor.hass = hass
-    sensor._last_update = dt_util.utcnow() - timedelta(hours=1)
-    sensor._total_kwh = 1.0
-
-    mock_coordinator.data = _make_coordinator_data(current=None)
-
-    with patch.object(sensor, "async_write_ha_state"):
-        sensor._handle_coordinator_update()
-
-    assert sensor._total_kwh == pytest.approx(1.0)  # unchanged
-
-
-# ---------------------------------------------------------------------------
-# Historical backfill trigger
-# ---------------------------------------------------------------------------
-
-
-async def test_backfill_triggered_once_on_historical_complete(hass, mock_coordinator, mock_config_entry):
-    """_push_historical_statistics must be scheduled exactly once when historical_data_complete becomes True."""
-    sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
-    sensor.hass = hass
-
-    mock_coordinator.data = _make_coordinator_data(current=None, historical_complete=True)
-
+    sensor._total_kwh = 7  # restored counter; no restored sample baseline
+    t = dt_util.utcnow()
+    data = mock_coordinator.data
+    data.update(current=2, sample_timestamp=t, connected=True)
     with (
-        patch.object(sensor, "_push_historical_statistics", new_callable=AsyncMock) as mock_push,
         patch.object(sensor, "async_write_ha_state"),
+        patch.object(dt_util, "utcnow", return_value=t),
     ):
         sensor._handle_coordinator_update()
-        await hass.async_block_till_done()
-
-    mock_push.assert_awaited_once()
-    assert sensor._historical_backfill_done is True
-
-
-async def test_backfill_not_triggered_twice(hass, mock_coordinator, mock_config_entry):
-    """Backfill must not fire again on subsequent updates after completion."""
-    sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
-    sensor.hass = hass
-    sensor._historical_backfill_done = True  # already done
-
-    mock_coordinator.data = _make_coordinator_data(current=None, historical_complete=True)
-
-    with (
-        patch.object(sensor, "_push_historical_statistics", new_callable=AsyncMock) as mock_push,
-        patch.object(sensor, "async_write_ha_state"),
-    ):
+        assert sensor.native_value == 7
+        data["sample_timestamp"] = t + timedelta(seconds=30)
+        with patch.object(dt_util, "utcnow", return_value=t + timedelta(seconds=30)):
+            sensor._handle_coordinator_update()
+        assert sensor._total_kwh == pytest.approx(7 + 460 * 30 / 3600000)
+        before = sensor._total_kwh
+        data["current"] = None
         sensor._handle_coordinator_update()
-        await hass.async_block_till_done()
+        data.update(current=10, sample_timestamp=t + timedelta(hours=2))
+        with patch.object(dt_util, "utcnow", return_value=t + timedelta(hours=2)):
+            sensor._handle_coordinator_update()
+        assert sensor._total_kwh == before
 
-    mock_push.assert_not_called()
+
+async def test_voltage_millivolts_converted_and_invalid_falls_back(hass):
+    from custom_components.energy_owl.energy import resolve_voltage
+
+    options = {"voltage_entity": "sensor.voltage", "voltage": 230}
+    hass.states.async_set("sensor.voltage", "240000", {"unit_of_measurement": "mV"})
+    assert resolve_voltage(hass, options) == 240
+    hass.states.async_set("sensor.voltage", "nan")
+    assert resolve_voltage(hass, options) == 230
 
 
-async def test_backfill_not_triggered_before_historical_complete(hass, mock_coordinator, mock_config_entry):
-    """Backfill must not fire while historical sync is still in progress."""
+async def test_reconnect_resets_live_baseline_even_without_failed_poll(hass, mock_coordinator, mock_config_entry):
     sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
     sensor.hass = hass
-
-    mock_coordinator.data = _make_coordinator_data(current=None, historical_complete=False)
-
-    with (
-        patch.object(sensor, "_push_historical_statistics", new_callable=AsyncMock) as mock_push,
-        patch.object(sensor, "async_write_ha_state"),
-    ):
+    t = dt_util.utcnow()
+    data = mock_coordinator.data
+    with patch.object(sensor, "async_write_ha_state"):
+        data.update(current=2, connected=True, sample_timestamp=t)
         sensor._handle_coordinator_update()
-        await hass.async_block_till_done()
-
-    mock_push.assert_not_called()
-    assert sensor._historical_backfill_done is False
-
-
-# ---------------------------------------------------------------------------
-# _push_historical_statistics — calls recorder API
-# ---------------------------------------------------------------------------
-
-
-async def test_push_calls_async_add_external_statistics(hass, mock_coordinator, mock_config_entry):
-    """_push_historical_statistics must call async_add_external_statistics with valid args."""
-    sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
-    sensor.hass = hass
-
-    records = [
-        {"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 2.0},
-        {"timestamp": datetime(2024, 1, 1, 11, 0, tzinfo=UTC), "current": 3.0},
-    ]
-    mock_coordinator.get_historical_data = AsyncMock(return_value=records)
-
-    with patch("custom_components.energy_owl.energy_sensor.async_add_external_statistics") as mock_recorder:
-        await sensor._push_historical_statistics()
-
-    mock_recorder.assert_called_once()
-    call_args = mock_recorder.call_args
-    _hass_arg, metadata, stats = call_args.args
-    assert metadata["has_sum"] is True
-    assert len(stats) == 2  # two hourly buckets
-    # Cumulative sum increases
-    assert stats[0]["sum"] < stats[1]["sum"]
-
-
-async def test_push_skips_when_no_records(hass, mock_coordinator, mock_config_entry):
-    """_push_historical_statistics must not call the recorder when there are no records."""
-    sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
-    sensor.hass = hass
-    mock_coordinator.get_historical_data = AsyncMock(return_value=[])
-
-    with patch("custom_components.energy_owl.energy_sensor.async_add_external_statistics") as mock_recorder:
-        await sensor._push_historical_statistics()
-
-    mock_recorder.assert_not_called()
-
-
-async def test_push_handles_recorder_error_gracefully(hass, mock_coordinator, mock_config_entry):
-    """A recorder exception must be caught; the sensor must not propagate it."""
-    sensor = OwlEnergySensor(mock_coordinator, mock_config_entry)
-    sensor.hass = hass
-    records = [{"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 2.0}]
-    mock_coordinator.get_historical_data = AsyncMock(return_value=records)
-
-    with patch(
-        "custom_components.energy_owl.energy_sensor.async_add_external_statistics",
-        side_effect=RuntimeError("recorder unavailable"),
-    ):
-        # Must not raise
-        await sensor._push_historical_statistics()
+        mock_coordinator.historical_sync_generation += 1
+        data.update(sample_timestamp=t + timedelta(seconds=30))
+        with patch.object(dt_util, "utcnow", return_value=t + timedelta(seconds=30)):
+            sensor._handle_coordinator_update()
+        assert sensor.native_value == 0

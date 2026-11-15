@@ -8,7 +8,7 @@ if [ ! -f "$VENV_DIR/bin/pytest" ]; then
     echo "Creating virtual environment..."
     python3 -m venv "$VENV_DIR"
     echo "Installing pytest-homeassistant-custom-component (this takes a few minutes)..."
-    "$VENV_DIR/bin/pip" install --quiet pytest-homeassistant-custom-component
+    "$VENV_DIR/bin/pip" install --quiet -r "$(dirname "$0")/requirements-test.txt"
     echo "Done."
 fi
 
