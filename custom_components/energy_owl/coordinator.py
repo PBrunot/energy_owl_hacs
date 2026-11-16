@@ -50,6 +50,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the Energy OWL CM160."""
 
     HISTORICAL_DATA_TIMEOUT = 120  # seconds without new history before closing a batch
+    HISTORICAL_BATCH_MAX_AGE = 120  # bound import latency during continuous streaming
 
     def __init__(
         self,
@@ -77,6 +78,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._last_historical_check = 0
         self._historical_snapshot_size = 0
         self._last_new_historical_record_time: float | None = None
+        self._historical_batch_started_time: float | None = None
         self._historical_completion_time: float | None = None
         self._auto_recovery_enabled = True
         self._auto_recovery_timeout = 300  # 5 minutes
@@ -361,6 +363,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("get_historical_data returned %d records", len(historical_data))
 
             new_count = len(historical_data)
+            if new_count and self._historical_batch_started_time is None:
+                self._historical_batch_started_time = time.monotonic()
             if new_count > self._last_historical_check:
                 if self._historical_data_complete:
                     # A live packet or a quiet period is not an end-of-history
@@ -385,7 +389,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Live and historical packets are interleaved on real devices.
             # The library's completion flag is sticky after the first live
-            # packet, so only a quiet history buffer closes an import batch.
+            # packet. Close on silence OR a bounded batch age so a continuous
+            # history stream cannot indefinitely postpone persistence/import.
             complete_from_timeout = False
             if not self._historical_data_complete and self._last_new_historical_record_time is not None:
                 elapsed = time.monotonic() - self._last_new_historical_record_time
@@ -401,9 +406,15 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                   and self._historical_data_count == 0 and self._total_updates > 1):
                 self._last_new_historical_record_time = time.monotonic()
 
-            if complete_from_timeout and not self._historical_data_complete:
+            batch_age_reached = (
+                self._historical_batch_started_time is not None
+                and time.monotonic() - self._historical_batch_started_time
+                >= self.HISTORICAL_BATCH_MAX_AGE
+            )
+            if (complete_from_timeout or batch_age_reached) and not self._historical_data_complete:
                 _LOGGER.info(
-                    "Historical buffer is quiet; completing this import batch."
+                    "Closing historical import batch (%s).",
+                    "maximum batch age" if batch_age_reached else "history buffer quiet",
                 )
                 self._historical_data_complete = True
                 self._fire_completion_event()
@@ -467,6 +478,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 await self.hass.async_add_executor_job(self._collector.clear_historical_data)
             self._last_historical_check = max(0, self._last_historical_check - count)
             self._historical_snapshot_size = 0
+            self._historical_batch_started_time = None
             if generation == self.historical_sync_generation:
                 self._all_pushers_complete = True
             _LOGGER.info("Imported historical prefix discarded from the local buffer; device streaming is unchanged.")
@@ -695,6 +707,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._last_historical_check = 0
         self._historical_snapshot_size = 0
         self._last_new_historical_record_time = None
+        self._historical_batch_started_time = None
         self._historical_completion_time = None
         self._historical_data_count = 0
         self.data = None

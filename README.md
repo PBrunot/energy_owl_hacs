@@ -81,7 +81,7 @@ All entities belong to a single **Energy OWL CM160 (`<port>`)** device.
 | Energy | kWh | Total increasing | Live cumulative estimate; restored across restarts, skips stale samples and gaps. See the combined statistics source below. |
 | Historical Data Status | - | Diagnostic (disabled) | Translated `starting`, `syncing`, `complete`, `disconnected` states; record count in attributes |
 
-> **Note**: During the initial historical data transmission (which can take 5–10 minutes), the Current and Power sensors show no value. The Historical Data Status sensor reflects progress. Real-time updates begin after the sync completes.
+> **Note**: Historical and live packets can arrive interleaved. Current and Power update as soon as fresh live packets arrive, independently of history import. History batches close after two minutes without new history or when the batch reaches two minutes of age (checked on each poll). The Historical Data Status sensor can alternate between `syncing` and `complete` as further batches arrive; `complete` describes a closed batch, not the end of device streaming or a Recorder commit.
 
 ## Energy Dashboard
 
@@ -160,7 +160,8 @@ target:
 
 ### `energy_owl_historical_data_complete`
 
-Fired when a historical import batch has received no new history for two minutes.
+Fired when a historical import batch has received no new history for two minutes,
+or reaches two minutes of age during continuous streaming (checked on each poll).
 Later history reopens collection and can produce another completion event.
 It does not confirm that Recorder has committed the import or that a device command
 was sent. The event's `device_id` is a legacy port-derived identifier,
@@ -213,6 +214,11 @@ logger:
 ```
 
 ## Version History
+
+### v0.9.4
+- Import bounded history batches during continuous streaming instead of waiting indefinitely for silence.
+- Preserve save-before-cleanup ordering and retry failed persistence without discarding pending records.
+- Add continuous-stream regression coverage for duplicate minutes, storage failure and disabled history import; clarify batch status and event semantics.
 
 ### v0.9.3
 - Keep collecting history when the device interleaves historical and live packets; complete batches after two minutes without new history and reopen collection for late records.

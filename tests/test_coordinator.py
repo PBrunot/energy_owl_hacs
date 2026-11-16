@@ -349,3 +349,65 @@ async def test_history_arriving_before_quiet_period_keeps_collection_open(hass):
         assert result["current"] == 1.5
         assert not coordinator.historical_data_complete
     collector.clear_historical_data.assert_not_called()
+
+
+@pytest.mark.parametrize("fail_first_save", [False, True])
+async def test_continuous_history_is_imported_without_silence(
+    hass, mock_config_entry, fail_first_save
+):
+    """Continuous/repeated hardware packets cannot starve durable history import."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from custom_components.energy_owl.collector import get_async_datacollector
+    from custom_components.energy_owl.statistics import OwlStatisticsImporter
+
+    collector = get_async_datacollector("/dev/not-opened", "CM160", 5)
+    collector.connected = True
+    coordinator = _prep_coordinator(hass, collector=collector)
+    importer = OwlStatisticsImporter(hass, mock_config_entry, coordinator)
+    importer._store.async_load = AsyncMock(return_value=None)
+    saved = []
+
+    async def save(data):
+        if fail_first_save and importer._store.async_save.await_count == 1:
+            raise OSError("disk full")
+        saved.append(deepcopy(data))
+
+    importer._store.async_save = AsyncMock(side_effect=save)
+    clock = SimpleNamespace(monotonic=lambda: elapsed)
+    with (
+        patch("custom_components.energy_owl.coordinator.time", clock),
+        patch("custom_components.energy_owl.statistics.async_add_external_statistics") as submit,
+    ):
+        for elapsed in range(0, 391, 30):
+            # Real packets; repeating minutes must not double count energy.
+            packet = "591a0b0e0712e2044700d2" if elapsed % 60 == 0 else "591a0b0e0713e2044600d2"
+            await collector.parse_packet(bytes.fromhex(packet))
+            coordinator.async_set_updated_data(await coordinator._async_update_data())
+            await importer._import(coordinator.historical_sync_generation)
+            if elapsed == 120 and fail_first_save:
+                assert len(collector.get_historical_data()) == 5
+                assert not saved
+                submit.assert_not_called()
+            if saved:
+                assert len(collector.get_historical_data()) < 6
+        assert len(saved) >= 2
+        assert submit.call_args.args[2][-1]["sum"] == pytest.approx((5.0 + 4.9) * 230 / 60000)
+    await importer.async_close()
+
+
+async def test_continuous_history_without_importer_is_bounded(hass):
+    """Disabled history importing must also release continuously growing buffers."""
+    from types import SimpleNamespace
+
+    from custom_components.energy_owl.collector import get_async_datacollector
+
+    collector = get_async_datacollector("/dev/not-opened", "CM160", 5)
+    collector.connected = True
+    coordinator = _prep_coordinator(hass, collector=collector)
+    with patch("custom_components.energy_owl.coordinator.time", SimpleNamespace(monotonic=lambda: elapsed)):
+        for elapsed in range(0, 301, 30):
+            await collector.parse_packet(bytes.fromhex("591a0b0e0712e2044700d2"))
+            await coordinator._async_update_data()
+            assert len(collector.get_historical_data()) < 5
