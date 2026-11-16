@@ -81,7 +81,7 @@ All entities belong to a single **Energy OWL CM160 (`<port>`)** device.
 | Energy | kWh | Total increasing | Live cumulative estimate; restored across restarts, skips stale samples and gaps. See the combined statistics source below. |
 | Historical Data Status | - | Diagnostic (disabled) | Translated `starting`, `syncing`, `complete`, `disconnected` states; record count in attributes |
 
-> **Note**: Historical and live packets can arrive interleaved. Current and Power update as soon as fresh live packets arrive, independently of history import. History batches close after two minutes without new history or when the batch reaches two minutes of age (checked on each poll). The Historical Data Status sensor can alternate between `syncing` and `complete` as further batches arrive; `complete` describes a closed batch, not the end of device streaming or a Recorder commit.
+> **Note**: Historical and live packets can arrive interleaved. Current and Power update as soon as fresh live packets arrive, independently of history import. History is imported in bounded two-minute batches silently. After initial processing, Historical Data Status stays `complete` during ordinary minute updates. `syncing` is reserved for a substantial recovery: at least 60 previously missing distinct historical minutes, each more than five minutes old. One notification is sent when that recovery settles. `complete` does not confirm a Recorder commit.
 
 ## Energy Dashboard
 
@@ -160,9 +160,13 @@ target:
 
 ### `energy_owl_historical_data_complete`
 
-Fired when a historical import batch has received no new history for two minutes,
-or reaches two minutes of age during continuous streaming (checked on each poll).
-Later history reopens collection and can produce another completion event.
+Fired once after a substantial recovery: at least 60 previously missing distinct
+historical minutes, each more than five minutes old, have been persisted and queued.
+Recovery completes after two minutes without older-history activity and no older
+records remain pending in the local buffer, checked on each poll. Ordinary minute
+updates, duplicates and smaller backfills are imported silently without firing this
+event or changing the status back to `syncing`. Counts accumulate across contiguous
+recovery batches and reset once that activity settles.
 It does not confirm that Recorder has committed the import or that a device command
 was sent. The event's `device_id` is a legacy port-derived identifier,
 not the Home Assistant device-registry ID used by action targets.
@@ -214,6 +218,11 @@ logger:
 ```
 
 ## Version History
+
+### v0.9.5
+- Separate recovery status and notifications from internal import batches. Notify once for substantial newly recovered history; import routine minute updates silently.
+- Retain a current, unfinished historical minute and its buffer suffix until it can be imported, including when no further packets arrive.
+- Keep read/export actions from changing the importer's cleanup prefix while storage is in progress.
 
 ### v0.9.4
 - Import bounded history batches during continuous streaming instead of waiting indefinitely for silence.

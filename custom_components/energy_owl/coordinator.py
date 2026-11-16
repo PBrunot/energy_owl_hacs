@@ -21,6 +21,7 @@ from .const import (
     DOMAIN,
     MODEL,
 )
+from .energy import HISTORY_INTERVAL, utc_timestamp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class CoordinatorDiagnostics(TypedDict):
     error_count: int
     historical_complete: bool
     historical_records: int
+    historical_sync_status: str
+    recovered_minutes: int
     generation: int
     batch_revision: int
     acknowledged: bool
@@ -51,6 +54,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
     HISTORICAL_DATA_TIMEOUT = 120  # seconds without new history before closing a batch
     HISTORICAL_BATCH_MAX_AGE = 120  # bound import latency during continuous streaming
+    HISTORY_RECOVERY_MINUTES = 60  # notify only for substantial newly recovered history
+    HISTORY_RECOVERY_MIN_AGE = timedelta(minutes=5)
 
     def __init__(
         self,
@@ -80,6 +85,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._last_new_historical_record_time: float | None = None
         self._historical_batch_started_time: float | None = None
         self._historical_completion_time: float | None = None
+        self._historical_sync_status = "starting"
+        self._recovered_minutes = 0
+        self._last_recovery_activity: float | None = None
+        self._pending_backfill = False
         self._auto_recovery_enabled = True
         self._auto_recovery_timeout = 300  # 5 minutes
         self._recovery_attempts = 0
@@ -105,6 +114,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             "total_updates": self.total_updates, "error_count": self.error_count,
             "historical_complete": self.historical_data_complete,
             "historical_records": self.historical_data_count,
+            "historical_sync_status": self._historical_sync_status,
+            "recovered_minutes": self._recovered_minutes,
             "generation": self.historical_sync_generation,
             "batch_revision": self.historical_batch_revision,
             "acknowledged": self.historical_sync_acknowledged,
@@ -190,6 +201,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 # Keep checking history even while live packets are arriving.
                 _LOGGER.debug("Checking historical data status. Complete: %s", self._historical_data_complete)
                 new_historical_records = await self._process_and_consume_historical_data_unlocked()
+                await self._async_finish_history_recovery()
 
                 if (self._historical_data_complete and not self._historical_data_pushers
                         and not self.historical_sync_acknowledged):
@@ -271,7 +283,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     f"{current} A" if current is not None else "N/A",
                     attempt + 1,
                     self.max_retries + 1,
-                    "Complete" if self._historical_data_complete else "Syncing"
+                    self._historical_sync_status,
                 )
 
                 # Broadcast real-time data to listeners if we have a current reading
@@ -288,6 +300,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                      "total_updates": self._total_updates,
                      "historical_data_complete": self._historical_data_complete,
                      "historical_data_count": self._historical_data_count,
+                     "historical_sync_status": self._historical_sync_status,
                      "debug_info": debug_info,
                  }
 
@@ -363,9 +376,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("get_historical_data returned %d records", len(historical_data))
 
             new_count = len(historical_data)
+            self._pending_backfill = any(self._is_backfill_record(record) for record in historical_data)
             if new_count and self._historical_batch_started_time is None:
                 self._historical_batch_started_time = time.monotonic()
-            if new_count > self._last_historical_check:
+            if (new_count > self._last_historical_check or (
+                    new_count and self._historical_data_complete and self._all_pushers_complete)):
                 if self._historical_data_complete:
                     # A live packet or a quiet period is not an end-of-history
                     # marker. Reopen imports when another history batch arrives.
@@ -374,6 +389,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     self._all_pushers_complete = False
                     self._historical_completion_time = None
                 new_records = historical_data[self._last_historical_check:]
+                if any(self._is_backfill_record(record) for record in new_records):
+                    self._last_recovery_activity = time.monotonic()
                 _LOGGER.debug("Processing %d new historical records", len(new_records))
                 self._last_historical_check = new_count
                 # Reset our own timeout timer since we just got fresh data
@@ -417,11 +434,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     "maximum batch age" if batch_age_reached else "history buffer quiet",
                 )
                 self._historical_data_complete = True
-                self._fire_completion_event()
                 if not self._historical_data_pushers:
                     # Historical import disabled: discard the local batch directly.
                     _LOGGER.info("No pushers registered; discarding the local history batch.")
                     await self._discard_imported_history_unlocked()
+                    self._historical_sync_status = "complete"
                 else:
                     _LOGGER.info(
                         "Historical batch ready. Waiting for %d pushers before local buffer cleanup.",
@@ -435,13 +452,52 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             return []
 
     def _fire_completion_event(self) -> None:
-        """Fire the historical data completion event."""
+        """Fire once after a substantial recovery, rather than on each batch."""
         port_safe = self.port.replace("/", "-").replace("\\", "-")
         self.hass.bus.fire(
             f"{DOMAIN}_historical_data_complete",
             {"device_port": self.port, "device_id": f"CM160-{port_safe}"},
         )
         _LOGGER.debug("Fired historical data completion event.")
+
+    def _is_backfill_record(self, record) -> bool:
+        """Distinguish delayed history from ordinary current-minute traffic."""
+        try:
+            return utc_timestamp(record["timestamp"]) < dt_util.utcnow() - self.HISTORY_RECOVERY_MIN_AGE
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    def history_imported(self, recovered_minutes: int) -> None:
+        """Record newly persisted older minutes; replayed minutes do not count."""
+        if self._historical_sync_status == "starting":
+            self._historical_sync_status = "complete"
+        if recovered_minutes:
+            self._recovered_minutes += recovered_minutes
+            self._last_recovery_activity = time.monotonic()
+            if self._recovered_minutes >= self.HISTORY_RECOVERY_MINUTES:
+                self._historical_sync_status = "syncing"
+
+    async def _async_finish_history_recovery(self) -> None:
+        """Coalesce recovery batches into one notification after history settles."""
+        if (self._pending_backfill or self._last_recovery_activity is None
+                or time.monotonic() - self._last_recovery_activity <= self.HISTORICAL_DATA_TIMEOUT):
+            return
+        count = self._recovered_minutes
+        self._recovered_minutes = 0
+        self._last_recovery_activity = None
+        if count < self.HISTORY_RECOVERY_MINUTES:
+            return
+        self._historical_sync_status = "complete"
+        self._fire_completion_event()
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification", "create",
+                {"title": "Energy OWL History Recovered",
+                 "message": f"Recovered {count} previously missing historical minutes. The energy ledger is saved and statistics are queued for Recorder.",
+                 "notification_id": f"energy_owl_processing_complete_{self.port}"},
+            )
+        except Exception:
+            _LOGGER.debug("Completion notification unavailable", exc_info=True)
 
     @property
     def historical_sync_acknowledged(self) -> bool:
@@ -477,6 +533,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 # Test doubles only; the runtime factory uses TimestampedCollector.
                 await self.hass.async_add_executor_job(self._collector.clear_historical_data)
             self._last_historical_check = max(0, self._last_historical_check - count)
+            self._historical_data_count = max(0, self._historical_data_count - count)
             self._historical_snapshot_size = 0
             self._historical_batch_started_time = None
             if generation == self.historical_sync_generation:
@@ -591,20 +648,6 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.info("All historical data pushers have completed. Cleaning up the local history buffer.")
             await self._discard_imported_history()
 
-            # Send notification about completion (best-effort; may be unavailable in tests)
-            try:
-                await self.hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {
-                        "title": "Energy OWL Historical Processing Complete",
-                        "message": "Historical statistics have been queued for Recorder and the imported local buffer has been cleaned up. Device streaming continues independently.",
-                        "notification_id": "energy_owl_processing_complete",
-                    },
-                )
-            except Exception:
-                _LOGGER.debug("Completion notification unavailable", exc_info=True)
-
     @property
     def connected(self) -> bool:
         """Return if the device is connected."""
@@ -635,11 +678,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         """Return the number of historical records collected."""
         return self._historical_data_count
 
-    async def get_historical_data(self, *, strict: bool = False) -> list:
+    async def get_historical_data(self, *, strict: bool = False, completed_only: bool = False) -> list:
         async with self._collector_lock:
-            return await self.get_historical_data_unlocked(strict=strict)
+            return await self.get_historical_data_unlocked(strict=strict, completed_only=completed_only)
 
-    async def get_historical_data_unlocked(self, *, strict: bool = False) -> list:
+    async def get_historical_data_unlocked(self, *, strict: bool = False, completed_only: bool = False) -> list:
         """Return the historical data from the collector."""
         if not self._collector:
             if strict:
@@ -650,7 +693,20 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             records = await self.hass.async_add_executor_job(
                 self._collector.get_historical_data
             )
-            if strict:
+            records = list(records)
+            if completed_only:
+                now = dt_util.utcnow()
+                for index, record in enumerate(records):
+                    try:
+                        start = utc_timestamp(record["timestamp"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if start <= now < start + HISTORY_INTERVAL:
+                        # Preserve the open minute AND its suffix. Cleanup must
+                        # discard only a contiguous persisted prefix.
+                        records = records[:index]
+                        break
+            if strict and completed_only:
                 self._historical_snapshot_size = len(records)
             return records
         except Exception as err:
@@ -709,6 +765,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._last_new_historical_record_time = None
         self._historical_batch_started_time = None
         self._historical_completion_time = None
+        self._historical_sync_status = "starting"
+        self._recovered_minutes = 0
+        self._last_recovery_activity = None
+        self._pending_backfill = False
         self._historical_data_count = 0
         self.data = None
 

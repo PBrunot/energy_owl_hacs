@@ -34,7 +34,7 @@ async def test_measurement_freshness(hass, mock_config_entry, mock_coordinator, 
 async def test_enum_status(mock_config_entry, mock_coordinator):
     sensor = OwlHistoricalDataSensor(mock_coordinator, mock_config_entry)
     assert sensor.native_value == "complete"
-    mock_coordinator.data["historical_data_complete"] = False
+    mock_coordinator.data["historical_sync_status"] = "syncing"
     assert sensor.native_value == "syncing"
     assert sensor.extra_state_attributes["records_collected"] == 100
     measurement = OwlCMSensor(mock_coordinator, mock_config_entry)

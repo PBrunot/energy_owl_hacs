@@ -1,4 +1,5 @@
 """Pytest configuration and fixtures for energy_owl tests."""
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,7 @@ def coordinator_data():
         "error_count": 0,
         "total_updates": 5,
         "historical_data_complete": True,
+        "historical_sync_status": "complete",
         "historical_data_count": 100,
         "new_historical_records": [],
         "debug_info": {},
@@ -81,6 +83,7 @@ def mock_coordinator(coordinator_data):
     coordinator.historical_sync_acknowledged = False
     coordinator.historical_sync_generation = 0
     coordinator.historical_batch_revision = 0
+    coordinator.HISTORY_RECOVERY_MIN_AGE = timedelta(minutes=5)
     coordinator.get_historical_data = AsyncMock(return_value=[])
     coordinator.notify_pusher_complete = AsyncMock()
     return coordinator

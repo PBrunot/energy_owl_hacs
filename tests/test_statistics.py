@@ -38,7 +38,7 @@ async def test_valid_external_statistics_and_acknowledgement(
     assert metadata["source"] == "energy_owl"
     assert metadata["unit_class"] == "energy"
     assert statistics[0]["sum"] == pytest.approx(0.46 / 60)
-    mock_coordinator.get_historical_data.assert_awaited_once_with(strict=True)
+    mock_coordinator.get_historical_data.assert_awaited_once_with(strict=True, completed_only=True)
     mock_coordinator.notify_pusher_complete.assert_awaited_once_with(importer)
     assert importer.is_processing_complete()
     await importer.async_close()

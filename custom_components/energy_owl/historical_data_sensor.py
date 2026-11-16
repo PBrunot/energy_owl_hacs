@@ -42,15 +42,7 @@ class OwlHistoricalDataSensor(OwlEntity, SensorEntity):
         if not connected:
             return "disconnected"
 
-        historical_complete = self.coordinator.data.get("historical_data_complete", False)
-        count = self.coordinator.data.get("historical_data_count", 0)
-
-        if historical_complete:
-            return "complete"
-        elif count > 0:
-            return "syncing"
-        else:
-            return "starting"
+        return self.coordinator.data.get("historical_sync_status", "starting")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

@@ -147,6 +147,7 @@ class OwlStatisticsImporter:
         self._replay = True
         self._last_submitted = None
         self._observed_generation = None
+        self._pending_recovered_minutes: set[datetime] = set()
         self._ledger = EnergyLedger()
         self._integrator = LiveEnergyIntegrator()
         self._store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.energy")
@@ -222,6 +223,7 @@ class OwlStatisticsImporter:
                     self._publish()
                 if self._observed_generation != generation:
                     self._integrator.reset()
+                    self._pending_recovered_minutes.clear()
                     self._observed_generation = generation
                 if (generation != self.coordinator.historical_sync_generation
                         or revision != self.coordinator.historical_batch_revision):
@@ -239,7 +241,7 @@ class OwlStatisticsImporter:
                     self._ledger.add(interval)
                 collecting = not self.coordinator.historical_data_complete
                 if not collecting and not self.is_processing_complete():
-                    records = await self.coordinator.get_historical_data(strict=True)
+                    records = await self.coordinator.get_historical_data(strict=True, completed_only=True)
                     if (generation != self.coordinator.historical_sync_generation
                             or revision != self.coordinator.historical_batch_revision):
                         return
@@ -250,6 +252,12 @@ class OwlStatisticsImporter:
                             rejected,
                         )
                     for interval in intervals:
+                        key = interval.start.isoformat()
+                        cutoff = self._ledger.data["cutoff"]
+                        if (interval.start < dt_util.utcnow() - self.coordinator.HISTORY_RECOVERY_MIN_AGE
+                                and (cutoff is None or key >= cutoff)
+                                and self._ledger.minutes.get(key, {}).get("history") is None):
+                            self._pending_recovered_minutes.add(interval.start)
                         self._ledger.add(interval, historical=True)
                     changed = (
                         True  # persist even an empty batch before local cleanup
@@ -271,6 +279,9 @@ class OwlStatisticsImporter:
                     self._complete = True
                     if not self.coordinator.historical_sync_acknowledged:
                         await self.coordinator.notify_pusher_complete(self)
+                    if self.coordinator.historical_sync_acknowledged:
+                        self.coordinator.history_imported(len(self._pending_recovered_minutes))
+                        self._pending_recovered_minutes.clear()
             except Exception:
                 _LOGGER.exception(
                     "Energy statistics journal/submission failed; retrying without discarding local history"
