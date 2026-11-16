@@ -214,6 +214,13 @@ logger:
 
 ## Version History
 
+### v0.9.3
+- Keep collecting history when the device interleaves historical and live packets; complete batches after two minutes without new history and reopen collection for late records.
+- Preserve records arriving during persistence; discard only the imported local buffer prefix after durable storage and Recorder submission.
+- Correct logs and documentation: local buffer cleanup sends no device acknowledgement and does not switch the device to live mode.
+- Preserve live energy integration across history batches; add regression coverage using packets from a real CM160 log.
+- Correct integration metadata and add pinned lint, metadata, hassfest, HACS and current-runtime CI checks.
+
 ### v0.9.2
 - Reject failed serial connections instead of reporting false success, including during configuration.
 - Serialize polling and serial lifecycle operations; clean up cancelled and partially failed setup.

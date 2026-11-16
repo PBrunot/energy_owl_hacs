@@ -82,5 +82,5 @@ manifest merely because tests or hassfest pass. See quality-scale.md for the aud
 
 The integration release version lives only in manifest.json. It is not a CM160
 firmware version and is not exposed as one on device metadata. Release notes and
-tags are updated only for an explicitly requested release. Priority 3 changes are
-local and unreleased; version 0.9.2 is retained until a release is authorized.
+tags are updated only for an explicitly requested release. Version 0.9.3 includes
+the packaging/validation improvements and interleaved-history fixes.
