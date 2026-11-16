@@ -36,6 +36,7 @@ class CoordinatorDiagnostics(TypedDict):
     historical_complete: bool
     historical_records: int
     generation: int
+    batch_revision: int
     acknowledged: bool
     pushers_registered: int
     all_pushers_complete: bool
@@ -48,7 +49,7 @@ class CoordinatorDiagnostics(TypedDict):
 class OwlDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the Energy OWL CM160."""
 
-    HISTORICAL_DATA_TIMEOUT = 120  # seconds without new records before forcing completion
+    HISTORICAL_DATA_TIMEOUT = 120  # seconds without new history before closing a batch
 
     def __init__(
         self,
@@ -74,6 +75,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._historical_data_complete = False
         self._historical_data_count = 0
         self._last_historical_check = 0
+        self._historical_snapshot_size = 0
         self._last_new_historical_record_time: float | None = None
         self._historical_completion_time: float | None = None
         self._auto_recovery_enabled = True
@@ -83,6 +85,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
         self._historical_data_pushers: list = []  # Track registered pushers
         self._all_pushers_complete = False
         self.historical_sync_generation = 0
+        self.historical_batch_revision = 0
         self._realtime_listeners: list = []  # Track real-time data listeners
 
         super().__init__(
@@ -101,6 +104,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             "historical_complete": self.historical_data_complete,
             "historical_records": self.historical_data_count,
             "generation": self.historical_sync_generation,
+            "batch_revision": self.historical_batch_revision,
             "acknowledged": self.historical_sync_acknowledged,
             "pushers_registered": len(self._historical_data_pushers),
             "all_pushers_complete": self._all_pushers_complete,
@@ -147,7 +151,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             self._historical_data_count = 0
             _LOGGER.info(
                 "Successfully connected to OWL device at %s. "
-                "Device will continue sending historical data before providing real-time updates.",
+                "Historical and live packets may arrive interleaved.",
                 self.port
             )
         except Exception as err:
@@ -181,18 +185,16 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 debug_info = {}
                 new_historical_records = []
 
-                # Phase 1: Process historical data until the sync is complete.
-                # During this phase, `current` will be None.
+                # Keep checking history even while live packets are arriving.
                 _LOGGER.debug("Checking historical data status. Complete: %s", self._historical_data_complete)
-                if not self._historical_data_complete:
-                    new_historical_records = await self._process_and_consume_historical_data_unlocked()
+                new_historical_records = await self._process_and_consume_historical_data_unlocked()
 
                 if (self._historical_data_complete and not self._historical_data_pushers
                         and not self.historical_sync_acknowledged):
-                    await self._acknowledge_historical_sync_completion_unlocked()
+                    await self._discard_imported_history_unlocked()
 
                 # Phase 2: Always attempt to get a real-time reading.
-                # The library should return None if it's not available yet (i.e., during historical sync).
+                # Live packets can arrive while history is still being collected.
                 _LOGGER.debug("Attempting to fetch current reading.")
                 current, sample_timestamp = await self._read_live_sample_unlocked()
                 if sample_timestamp is None or not 0 <= (dt_util.utcnow() - sample_timestamp).total_seconds() <= 90:
@@ -231,16 +233,6 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                         )
 
                 _LOGGER.debug("Got current reading: %s", current)
-
-                # If we received a real-time reading, historical sync is over.
-                # This acts as a fallback if is_historical_data_complete() gets stuck.
-                if current is not None and not self._historical_data_complete:
-                    _LOGGER.info(
-                        "Real-time reading received. Finalizing historical data sync."
-                    )
-                    if not self._historical_data_pushers:
-                        await self._acknowledge_historical_sync_completion_unlocked()
-                    self._historical_data_complete = True
 
                 # Reset recovery state if we got real-time data
                 if current is not None and self._historical_data_complete:
@@ -370,6 +362,13 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
             new_count = len(historical_data)
             if new_count > self._last_historical_check:
+                if self._historical_data_complete:
+                    # A live packet or a quiet period is not an end-of-history
+                    # marker. Reopen imports when another history batch arrives.
+                    self.historical_batch_revision += 1
+                    self._historical_data_complete = False
+                    self._all_pushers_complete = False
+                    self._historical_completion_time = None
                 new_records = historical_data[self._last_historical_check:]
                 _LOGGER.debug("Processing %d new historical records", len(new_records))
                 self._last_historical_check = new_count
@@ -384,44 +383,37 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
             self._historical_data_count = new_count
 
-            # 2. Check for completion using the library's method
-            complete_from_library = await self.hass.async_add_executor_job(
-                self._collector.is_historical_data_complete
-            )
-            if complete_from_library:
-                _LOGGER.info("Library reports historical data is complete. Total records: %d", self._historical_data_count)
-            else:
-                _LOGGER.debug("Library reports historical data is NOT complete yet. Records: %d", self._historical_data_count)
-
-            # 3. Check for completion using our own coordinator-level timeout
-            # Use reasonable timeout - if no new data for 2 minutes, assume complete
+            # Live and historical packets are interleaved on real devices.
+            # The library's completion flag is sticky after the first live
+            # packet, so only a quiet history buffer closes an import batch.
             complete_from_timeout = False
-            if self._last_new_historical_record_time is not None:
+            if not self._historical_data_complete and self._last_new_historical_record_time is not None:
                 elapsed = time.monotonic() - self._last_new_historical_record_time
                 if elapsed > self.HISTORICAL_DATA_TIMEOUT:
-                    _LOGGER.warning(
-                        "No new historical data for over %s seconds (%.1f minutes). Forcing completion. Total records collected: %d",
+                    _LOGGER.debug(
+                        "No new historical data for over %s seconds (%.1f minutes). Closing batch with %d records",
                         self.HISTORICAL_DATA_TIMEOUT,
                         self.HISTORICAL_DATA_TIMEOUT / 60,
                         self._historical_data_count,
                     )
                     complete_from_timeout = True
-            elif self._historical_data_count == 0 and self._total_updates > 1:
+            elif (not self._historical_data_complete and self._last_new_historical_record_time is None
+                  and self._historical_data_count == 0 and self._total_updates > 1):
                 self._last_new_historical_record_time = time.monotonic()
 
-            if (complete_from_library or complete_from_timeout) and not self._historical_data_complete:
+            if complete_from_timeout and not self._historical_data_complete:
                 _LOGGER.info(
-                    "Historical data sync is considered complete. Acknowledging to transition to real-time."
+                    "Historical buffer is quiet; completing this import batch."
                 )
                 self._historical_data_complete = True
                 self._fire_completion_event()
                 if not self._historical_data_pushers:
-                    # No pushers registered (historical import disabled): acknowledge directly.
-                    _LOGGER.info("No pushers registered; acknowledging to device immediately.")
-                    await self._acknowledge_historical_sync_completion_unlocked()
+                    # Historical import disabled: discard the local batch directly.
+                    _LOGGER.info("No pushers registered; discarding the local history batch.")
+                    await self._discard_imported_history_unlocked()
                 else:
                     _LOGGER.info(
-                        "Historical data complete. Waiting for %d pushers before acknowledging to device.",
+                        "Historical batch ready. Waiting for %d pushers before local buffer cleanup.",
                         len(self._historical_data_pushers)
                     )
 
@@ -442,34 +434,44 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
     @property
     def historical_sync_acknowledged(self) -> bool:
-        """Return whether the current historical session has been acknowledged."""
+        """Return whether the current batch has completed local buffer cleanup.
+
+        The legacy property name does not imply a device acknowledgement.
+        """
         return self._all_pushers_complete
 
-    async def _acknowledge_historical_sync_completion(self) -> None:
+    async def _discard_imported_history(self) -> None:
         generation = self.historical_sync_generation
+        revision = self.historical_batch_revision
         async with self._collector_lock:
-            if generation != self.historical_sync_generation:
+            if (generation != self.historical_sync_generation
+                    or revision != self.historical_batch_revision):
                 return
-            return await self._acknowledge_historical_sync_completion_unlocked()
+            return await self._discard_imported_history_unlocked()
 
-    async def _acknowledge_historical_sync_completion_unlocked(self) -> None:
-        """Acknowledge historical data completion to the device to transition to real-time mode."""
+    async def _discard_imported_history_unlocked(self) -> None:
+        """Discard only the imported local prefix; no device command is sent."""
         if not self._collector:
-            raise UpdateFailed("Collector unavailable during historical acknowledgement")
+            raise UpdateFailed("Collector unavailable during historical buffer cleanup")
 
         generation = self.historical_sync_generation
         try:
-            # This library call sends the necessary command to the device to
-            # finalize the historical data sync and switch to real-time mode.
-            _LOGGER.info("Calling collector.clear_historical_data() to acknowledge sync completion.")
-            await self.hass.async_add_executor_job(
-                self._collector.clear_historical_data
-            )
+            count = (self._historical_snapshot_size if self._historical_data_pushers
+                     else self._last_historical_check)
+            if isinstance(self._collector, TimestampedCollector):
+                # Do not await: serial parsing runs on this event loop too.
+                # Packets appended during Store/Recorder awaits must survive.
+                self._collector.discard_historical_prefix(count)
+            else:
+                # Test doubles only; the runtime factory uses TimestampedCollector.
+                await self.hass.async_add_executor_job(self._collector.clear_historical_data)
+            self._last_historical_check = max(0, self._last_historical_check - count)
+            self._historical_snapshot_size = 0
             if generation == self.historical_sync_generation:
                 self._all_pushers_complete = True
-            _LOGGER.info("Acknowledged historical data completion to device. Device should now switch to real-time mode.")
+            _LOGGER.info("Imported historical prefix discarded from the local buffer; device streaming is unchanged.")
         except Exception as err:
-            raise UpdateFailed("Could not acknowledge historical sync") from err
+            raise UpdateFailed("Could not discard imported historical buffer") from err
 
     async def _attempt_automatic_recovery(self) -> None:
         async with self._collector_lock:
@@ -574,8 +576,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 break
 
         if all_complete and not self._all_pushers_complete:
-            _LOGGER.info("All historical data pushers have completed. Now acknowledging to device.")
-            await self._acknowledge_historical_sync_completion()
+            _LOGGER.info("All historical data pushers have completed. Cleaning up the local history buffer.")
+            await self._discard_imported_history()
 
             # Send notification about completion (best-effort; may be unavailable in tests)
             try:
@@ -584,7 +586,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     "create",
                     {
                         "title": "Energy OWL Historical Processing Complete",
-                        "message": "Historical statistics have been submitted to Recorder. Device will now switch to real-time mode.",
+                        "message": "Historical statistics have been queued for Recorder and the imported local buffer has been cleaned up. Device streaming continues independently.",
                         "notification_id": "energy_owl_processing_complete",
                     },
                 )
@@ -633,9 +635,12 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             return []
 
         try:
-            return await self.hass.async_add_executor_job(
+            records = await self.hass.async_add_executor_job(
                 self._collector.get_historical_data
             )
+            if strict:
+                self._historical_snapshot_size = len(records)
+            return records
         except Exception as err:
             _LOGGER.warning("Error getting historical data: %s", err)
             if strict:
@@ -685,8 +690,10 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
     def _reset_import_session(self) -> None:
         """Invalidate import completion and collection cursors on a new sync."""
         self.historical_sync_generation += 1
+        self.historical_batch_revision = 0
         self._all_pushers_complete = False
         self._last_historical_check = 0
+        self._historical_snapshot_size = 0
         self._last_new_historical_record_time = None
         self._historical_completion_time = None
         self._historical_data_count = 0

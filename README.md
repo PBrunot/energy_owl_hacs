@@ -160,9 +160,10 @@ target:
 
 ### `energy_owl_historical_data_complete`
 
-Fired when the coordinator marks historical collection complete for a sync session.
-It does not confirm that Recorder has committed the import or that the device has
-acknowledged completion. The event's `device_id` is a legacy port-derived identifier,
+Fired when a historical import batch has received no new history for two minutes.
+Later history reopens collection and can produce another completion event.
+It does not confirm that Recorder has committed the import or that a device command
+was sent. The event's `device_id` is a legacy port-derived identifier,
 not the Home Assistant device-registry ID used by action targets.
 
 ```yaml
@@ -224,7 +225,7 @@ logger:
 - Removed historical state-table writes; historical and live energy now share a durable external statistics source.
 - Corrected history from full-hour extrapolation to observed one-minute intervals, including duplicate, overlap and DST handling.
 - Added live packet receipt timestamps, stale-data/gap protection and safe restored baselines.
-- Added atomic storage before acknowledgement and idempotent startup replay.
+- Added atomic storage before local history cleanup and idempotent startup replay.
 - Fixed serial exception imports for owlsensor's serialx dependency; aligned HACS minimum HA to 2026.5.2.
 
 ### v0.9.0
@@ -298,8 +299,11 @@ uses the valid `energy_owl:cm160_<port>_v2_energy` form.
 
 The entry owns the importer, including when sensor entities are disabled. Validated
 minute records and live intervals are saved atomically under HA's `.storage` before
-statistics are queued or device history is acknowledged. If storage fails, the device
-buffer is retained. If Recorder submission fails or the process exits before commit,
+statistics are queued or imported records are removed from the local collector
+buffer. If storage fails, the local buffer is retained. Buffer cleanup sends no
+command to the device and does not control its switch to live packets; the pinned
+owlsensor parser handles protocol START/CONTINUE requests independently. Records
+arriving during persistence are preserved for the next batch. If Recorder submission fails or the process exits before commit,
 the durable ledger is replayed on the next update/startup. Submission is not itself a
 commit acknowledgement. Do not delete the integration's storage files unless you
 intend to reset its accounting baseline; include them in HA backups.

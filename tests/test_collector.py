@@ -40,3 +40,14 @@ async def test_invalid_packet_does_not_refresh_cached_sample():
         assert collector.get_live_sample() == sample
         collector.connected = False
         assert collector.get_live_sample() == (None, None)
+
+
+async def test_prefix_cleanup_is_local_and_preserves_newer_history():
+    collector = get_async_datacollector("/dev/test-not-opened", "CM160", 5)
+    with patch.object(collector, "send_data", new_callable=AsyncMock) as send:
+        await collector.parse_packet(bytes.fromhex("591a0b0e0712e2044700d2"))
+        await collector.parse_packet(bytes.fromhex("591a0b0e0713e2044600d2"))
+        collector.discard_historical_prefix(1)
+        assert len(collector.get_historical_data()) == 1
+        assert collector.get_historical_data()[0]["timestamp"].minute == 19
+        send.assert_not_awaited()

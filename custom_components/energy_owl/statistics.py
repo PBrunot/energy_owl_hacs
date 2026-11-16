@@ -48,7 +48,7 @@ class EnergyLedger:
 
     Keep 35 days of minute resolution for overlapping 30-day device downloads.
     Older hourly totals retain the cumulative baseline without unbounded samples.
-    Persist the entire ledger BEFORE submitting statistics or clearing the device.
+    Persist the entire ledger BEFORE submitting statistics or discarding local records.
     """
 
     def __init__(self, data=None):
@@ -140,6 +140,7 @@ class OwlStatisticsImporter:
         self._task: asyncio.Task[None] | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._generation: int | None = None
+        self._revision: int | None = None
         self._complete = False
         self._closed = False
         self._loaded = False
@@ -167,7 +168,8 @@ class OwlStatisticsImporter:
         if self._closed:
             return
         generation = self.coordinator.historical_sync_generation
-        if self._generation != generation:
+        if (self._generation != generation
+                or self._revision != self.coordinator.historical_batch_revision):
             self._complete = False
         if self._task is None or self._task.done():
             self._task = self.hass.async_create_task(self._import(generation))
@@ -176,6 +178,7 @@ class OwlStatisticsImporter:
         return (
             self._complete
             and self._generation == self.coordinator.historical_sync_generation
+            and self._revision == self.coordinator.historical_batch_revision
         )
 
     def diagnostics_snapshot(self) -> dict[str, bool | int | None]:
@@ -211,6 +214,7 @@ class OwlStatisticsImporter:
 
     async def _import(self, generation: int) -> None:
         async with self._lock:
+            revision = self.coordinator.historical_batch_revision
             try:
                 await self.async_load()
                 # Recovery must not depend on the serial device being reachable.
@@ -219,7 +223,8 @@ class OwlStatisticsImporter:
                 if self._observed_generation != generation:
                     self._integrator.reset()
                     self._observed_generation = generation
-                if generation != self.coordinator.historical_sync_generation:
+                if (generation != self.coordinator.historical_sync_generation
+                        or revision != self.coordinator.historical_batch_revision):
                     return
                 data = self.coordinator.data or {}
                 interval = self._integrator.sample(
@@ -235,7 +240,8 @@ class OwlStatisticsImporter:
                 collecting = not self.coordinator.historical_data_complete
                 if not collecting and not self.is_processing_complete():
                     records = await self.coordinator.get_historical_data(strict=True)
-                    if generation != self.coordinator.historical_sync_generation:
+                    if (generation != self.coordinator.historical_sync_generation
+                            or revision != self.coordinator.historical_batch_revision):
                         return
                     intervals, rejected = history_intervals(records, self._voltage())
                     if rejected:
@@ -246,26 +252,28 @@ class OwlStatisticsImporter:
                     for interval in intervals:
                         self._ledger.add(interval, historical=True)
                     changed = (
-                        True  # persist even an empty collection before acknowledging
+                        True  # persist even an empty batch before local cleanup
                     )
                 if changed:
                     self._ledger.compact(dt_util.utcnow())
-                    # Store is atomic; failure prevents acknowledgement. On restart replay
+                    # Store is atomic; failure prevents local buffer cleanup. On restart replay
                     # the ledger even if the previous API submission was never committed.
                     await self._store.async_save(self._ledger.data)
                     self._replay = True
                 if self._replay:
                     self._publish()
-                if generation != self.coordinator.historical_sync_generation:
+                if (generation != self.coordinator.historical_sync_generation
+                        or revision != self.coordinator.historical_batch_revision):
                     return
                 if not collecting:
                     self._generation = generation
+                    self._revision = revision
                     self._complete = True
                     if not self.coordinator.historical_sync_acknowledged:
                         await self.coordinator.notify_pusher_complete(self)
             except Exception:
                 _LOGGER.exception(
-                    "Energy statistics journal/submission failed; retrying without clearing device history"
+                    "Energy statistics journal/submission failed; retrying without discarding local history"
                 )
 
     async def async_close(self) -> None:

@@ -17,6 +17,15 @@ class TimestampedCollector(CMDataCollector):
     def get_live_sample(self):
         return self._live_sample if self.connected else (None, None)
 
+    def discard_historical_prefix(self, count: int) -> None:
+        """Discard a persisted prefix on the event loop, preserving newer packets.
+
+        owlsensor 0.7.2 only exposes a whole-buffer clear. Its parser appends on
+        this same event loop, so this synchronous slice cannot race an append.
+        This is local housekeeping; it sends no command to the device.
+        """
+        del self._historical_data[:count]
+
     async def parse_packet(self, buffer):
         result = await super().parse_packet(buffer)
         # Match the pinned library's post-parse consistency check. An invalid

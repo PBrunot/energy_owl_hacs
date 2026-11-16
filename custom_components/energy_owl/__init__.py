@@ -76,7 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnergyOwlConfigEntry) ->
             entry, data={**entry.data, CONF_NOT_FIRST_RUN: True}
         )
         _LOGGER.info(
-            "First run detected. Device will send historical data before real-time updates."
+            "First run detected. Historical and live packets may arrive interleaved."
         )
 
     entry.runtime_data = EnergyOwlData(coordinator=coordinator, importer=importer)

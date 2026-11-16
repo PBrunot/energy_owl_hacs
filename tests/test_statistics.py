@@ -338,6 +338,10 @@ async def test_combined_source_continues_with_live_after_history(
         data = mock_coordinator.data
         t += timedelta(minutes=2)
         for offset in (0, 30):
+            if offset:
+                # Late history reopens a batch without breaking live integration.
+                mock_coordinator.historical_batch_revision += 1
+                mock_coordinator.historical_data_complete = False
             data.update(
                 current=2,
                 sample_timestamp=t + timedelta(seconds=offset),

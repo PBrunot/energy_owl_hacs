@@ -10,7 +10,7 @@ See docs/quality-scale.md for the rule audit and outstanding gaps.
 ## Architecture
 
 - `__init__.py`: config-entry setup/unload, typed runtime_data, action registration.
-- `coordinator.py`: serial connection, polling, history sync and acknowledgement,
+- `coordinator.py`: serial connection, polling, history batches and local buffer cleanup,
   manual reset/reconnect, recovery, public typed diagnostics snapshot.
 - `collector.py`: subclass of the pinned owlsensor parser; records UTC receipt
   timestamps for actual live packets, including identical consecutive values.
@@ -27,8 +27,9 @@ See docs/quality-scale.md for the rule audit and outstanding gaps.
 ## Invariants
 
 Never write historical states or modify Recorder tables directly. Save the ledger
-before acknowledging device history. Recorder submission is queued, not a commit
-confirmation; replay provides recovery. History replaces overlapping live estimates;
+before discarding imported records from the local collector buffer. This cleanup
+sends no device acknowledgement; owlsensor handles protocol flow control.
+Recorder submission is queued, not a commit confirmation; replay provides recovery. History replaces overlapping live estimates;
 first accepted historical voltage is retained. Do not invent missing intervals.
 
 Live integration uses receipt timestamps and a 90-second maximum gap. Restore,

@@ -80,6 +80,7 @@ def mock_coordinator(coordinator_data):
     coordinator.port = "/dev/ttyUSB0"
     coordinator.historical_sync_acknowledged = False
     coordinator.historical_sync_generation = 0
+    coordinator.historical_batch_revision = 0
     coordinator.get_historical_data = AsyncMock(return_value=[])
     coordinator.notify_pusher_complete = AsyncMock()
     return coordinator

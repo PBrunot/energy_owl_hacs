@@ -69,11 +69,14 @@ async def test_timeout_path_does_not_raise_name_error(hass):
 # ---------------------------------------------------------------------------
 
 
-async def test_no_pusher_acknowledges_device_immediately(hass):
-    """With no registered pushers and historical complete, device must be acknowledged at once."""
+async def test_no_pusher_discards_local_batch_after_quiet_period(hass):
+    """A quiet batch can be discarded locally when historical import is disabled."""
     records = [{"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 1.5}]
     collector = _make_collector(records=records, complete=True)
     coordinator = _prep_coordinator(hass, collector=collector)
+
+    coordinator._last_historical_check = 1
+    coordinator._last_new_historical_record_time = time.monotonic() - 121
 
     assert coordinator._historical_data_pushers == []
 
@@ -83,11 +86,14 @@ async def test_no_pusher_acknowledges_device_immediately(hass):
     collector.clear_historical_data.assert_called_once()
 
 
-async def test_pusher_registered_delays_acknowledgement(hass):
-    """With a pusher registered, device acknowledgement must NOT be called immediately."""
+async def test_pusher_registered_delays_local_cleanup(hass):
+    """A quiet batch must remain buffered until its importer completes."""
     records = [{"timestamp": datetime(2024, 1, 1, 10, 0, tzinfo=UTC), "current": 1.5}]
     collector = _make_collector(records=records, complete=True)
     coordinator = _prep_coordinator(hass, collector=collector)
+
+    coordinator._last_historical_check = 1
+    coordinator._last_new_historical_record_time = time.monotonic() - 121
 
     # Register a fake pusher
     fake_pusher = MagicMock()
@@ -227,7 +233,8 @@ async def test_live_fallback_preserves_history_for_importer(hass):
     pusher.is_processing_complete.return_value = False
     coordinator.register_historical_pusher(pusher)
     result = await coordinator._async_update_data()
-    assert result["historical_data_complete"]
+    assert result["current"] == 1.5
+    assert not result["historical_data_complete"]
     collector.clear_historical_data.assert_not_called()
 
 
@@ -264,3 +271,81 @@ async def test_connection_result_controls_status(hass, caplog, connected):
             assert not coordinator.connected
             assert "Could not open serial port" in coordinator.last_error
             assert "Successfully connected to OWL device" not in caplog.text
+
+
+@pytest.mark.parametrize("poll_during_save", [False, True])
+async def test_interleaved_real_packets_and_late_history_are_imported(
+    hass, mock_config_entry, poll_during_save
+):
+    """Replay hardware packets, including history arriving during persistence."""
+    from copy import deepcopy
+
+    from custom_components.energy_owl.collector import get_async_datacollector
+    from custom_components.energy_owl.statistics import OwlStatisticsImporter
+
+    collector = get_async_datacollector("/dev/not-opened", "CM160", 5)
+    collector.connected = True
+    coordinator = _prep_coordinator(hass, collector=collector)
+    importer = OwlStatisticsImporter(hass, mock_config_entry, coordinator)
+    importer._store.async_load = AsyncMock(return_value=None)
+    saved = []
+
+    async def save(data):
+        saved.append(deepcopy(data))
+        if len(saved) == 1:
+            # The snapshot is already taken; this record must survive cleanup.
+            await collector.parse_packet(bytes.fromhex("591a0b0e0713e2044600d2"))
+            if poll_during_save:
+                coordinator.async_set_updated_data(await coordinator._async_update_data())
+
+    importer._store.async_save = AsyncMock(side_effect=save)
+    with patch("custom_components.energy_owl.statistics.async_add_external_statistics") as submit:
+        await collector.parse_packet(bytes.fromhex("591a0b0e0712e2044700d2"))
+        await collector.parse_packet(bytes.fromhex("511a0b0e0712e2044700ca"))
+        assert collector.is_historical_data_complete()
+        first = await coordinator._async_update_data()
+        coordinator.async_set_updated_data(first)
+        assert first["current"] == 5.0
+        assert not first["historical_data_complete"]
+        assert len(collector.get_historical_data()) == 1
+
+        # Only history silence closes the batch, regardless of the sticky flag.
+        coordinator._last_new_historical_record_time = time.monotonic() - 121
+        coordinator.async_set_updated_data(await coordinator._async_update_data())
+        await importer._import(coordinator.historical_sync_generation)
+        assert importer.is_processing_complete() is (not poll_during_save)
+        assert len(collector.get_historical_data()) == (2 if poll_during_save else 1)
+        assert collector.get_historical_data()[-1]["timestamp"].minute == 19
+        assert saved  # durable before imported prefix was discarded
+
+        generation = coordinator.historical_sync_generation
+        revision = coordinator.historical_batch_revision
+        coordinator.async_set_updated_data(await coordinator._async_update_data())
+        assert coordinator.historical_sync_generation == generation
+        assert coordinator.historical_batch_revision == revision + (not poll_during_save)
+        assert not coordinator.historical_data_complete
+        assert not importer.is_processing_complete()
+        coordinator._last_new_historical_record_time = time.monotonic() - 121
+        coordinator.async_set_updated_data(await coordinator._async_update_data())
+        await importer._import(coordinator.historical_sync_generation)
+        assert collector.get_historical_data() == []
+        assert importer.is_processing_complete()
+        assert submit.call_args.args[2][-1]["sum"] == pytest.approx((5.0 + 4.9) * 230 / 60000)
+        assert saved[-1] != saved[0]
+    await importer.async_close()
+
+
+async def test_history_arriving_before_quiet_period_keeps_collection_open(hass):
+    collector = _make_collector(complete=True)
+    coordinator = _prep_coordinator(hass, collector=collector)
+    collector.get_current.return_value = 1.5
+    for minute in range(3):
+        collector.get_historical_data.return_value = [
+            {"timestamp": datetime(2026, 11, 14, 7, n, tzinfo=UTC), "current": 2}
+            for n in range(minute + 1)
+        ]
+        coordinator._last_new_historical_record_time = time.monotonic() - 121
+        result = await coordinator._async_update_data()
+        assert result["current"] == 1.5
+        assert not coordinator.historical_data_complete
+    collector.clear_historical_data.assert_not_called()
