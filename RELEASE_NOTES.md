@@ -14,6 +14,8 @@ sends historical records alongside live readings.
 - Clarify that live readings and history arrive interleaved. History status may
   alternate between `syncing` and `complete` as batches arrive. Completion events
   describe closed batches, not the end of device streaming or a Recorder commit.
+- Synchronize the real Recorder regression test before requesting a commit, so
+  fast CI runners cannot read an earlier state while writes are still pending.
 
 ## Upgrade
 

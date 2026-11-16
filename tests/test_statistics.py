@@ -192,6 +192,9 @@ async def test_real_recorder_import_preserves_unrelated_states(
     await importer._import(1)  # no statistics API mock: validates and queues the import
     hass.states.async_set("sensor.unrelated", "2")
     await hass.async_block_till_done()
+    # Drain the events first: the commit helper can skip scheduling when the
+    # Recorder thread has not yet marked its session as needing a commit.
+    await async_recorder_block_till_done(hass)
     async_trigger_db_commit(hass)
     await async_recorder_block_till_done(hass)
     states = await hass.async_add_executor_job(
