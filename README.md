@@ -194,7 +194,9 @@ automation:
 
 ## Automatic Recovery
 
-If the device transitions to historical-data-complete state but real-time readings do not arrive within 5 minutes, the coordinator automatically disconnects and reconnects (up to 3 attempts). Progress and outcome are reported via HA persistent notifications. Use `force_reconnect` for manual recovery if automatic recovery is exhausted.
+If the USB serial connection closes, the coordinator retries the configured port on subsequent polls until it becomes available. It also reopens a serial connection that delivers no packets for five minutes, even while history is being collected.
+
+If packets are still arriving but real-time readings do not resume within five minutes after history completes, the coordinator attempts automatic recovery up to three times. Progress and outcome are reported via HA persistent notifications. Use `force_reconnect` for manual recovery if these attempts are exhausted.
 
 ## Troubleshooting
 
@@ -218,6 +220,12 @@ logger:
 ```
 
 ## Version History
+
+### v0.9.6
+
+- Recover automatically after a USB disconnect by retrying the configured serial
+  port until it returns. Reopen a silent port after five minutes without packets,
+  even while historical data is being collected.
 
 ### v0.9.5
 - Separate recovery status and notifications from internal import batches. Notify once for substantial newly recovered history; import routine minute updates silently.

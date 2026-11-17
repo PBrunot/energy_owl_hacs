@@ -1,13 +1,64 @@
 """Tests for OwlDataUpdateCoordinator — bug-fix regression suite."""
+import asyncio
 import time
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.energy_owl.coordinator import OwlDataUpdateCoordinator
 
 UTC = timezone.utc
+
+
+@pytest.mark.parametrize("loss", ["eof", "silent"])
+async def test_usb_reconnect_before_history_completes(hass, loss):
+    """Dispose of the old stream and retry on later polls until USB returns."""
+    old_reader, new_reader = asyncio.StreamReader(), asyncio.StreamReader()
+    old_writer, new_writer = MagicMock(), MagicMock()
+    for writer in (old_writer, new_writer):
+        writer.drain = AsyncMock()
+        writer.wait_closed = AsyncMock()
+        writer.is_closing.return_value = False
+    coordinator = OwlDataUpdateCoordinator(hass, "/dev/ttyUSB0", timeout=0)
+
+    with (
+        patch("owlsensor.serial_cm.serialx.open_serial_connection", side_effect=[
+            (old_reader, old_writer),
+            OSError("USB absent"),
+            OSError("USB absent"),
+            (new_reader, new_writer),
+        ]) as serial_open,
+        patch("custom_components.energy_owl.collector.monotonic", return_value=0) as clock,
+    ):
+        await coordinator._async_setup()
+        old_collector = coordinator._collector
+        assert not (await coordinator._async_update_data())["historical_data_complete"]
+        if loss == "eof":
+            old_reader.feed_eof()
+            assert await old_collector.read_data() is None
+            assert serial_open.await_count == 1
+        else:
+            clock.return_value = coordinator.SERIAL_IDLE_TIMEOUT
+
+        for _ in range(2):
+            with pytest.raises(UpdateFailed, match="Could not open serial port"):
+                await coordinator._async_update_data()
+            assert not coordinator.connected
+        old_writer.close.assert_called_once()
+        old_writer.wait_closed.assert_awaited_once()
+
+        try:
+            await coordinator._async_update_data()
+            new_reader.feed_data(bytes.fromhex("511a0b0e0712e2044700ca"))
+            await coordinator._collector.read_data()
+            data = await coordinator._async_update_data()
+            assert data["connected"]
+            assert data["current"] == 5.0
+            assert serial_open.await_count == 4
+        finally:
+            await coordinator.async_disconnect()
 
 
 # ---------------------------------------------------------------------------

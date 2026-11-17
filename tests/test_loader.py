@@ -17,6 +17,8 @@ def collector():
     device = MagicMock(spec=TimestampedCollector)
     device.connect = AsyncMock(return_value=True)
     device.disconnect = AsyncMock()
+    device.transport_lost = False
+    device.transport_idle_for.return_value = False
     device.get_historical_data.return_value = []
     device.is_historical_data_complete.return_value = True
     device.get_live_sample.side_effect = lambda: (1.5, dt_util.utcnow())

@@ -54,6 +54,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
 
     HISTORICAL_DATA_TIMEOUT = 120  # seconds without new history before closing a batch
     HISTORICAL_BATCH_MAX_AGE = 120  # bound import latency during continuous streaming
+    SERIAL_IDLE_TIMEOUT = 300  # reopen a silent port even if the stream never reports EOF
     HISTORY_RECOVERY_MINUTES = 60  # notify only for substantial newly recovered history
     HISTORY_RECOVERY_MIN_AGE = timedelta(minutes=5)
 
@@ -154,7 +155,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 self.port
             )
             _LOGGER.debug("Calling collector.connect()")
-            if not await self._collector.connect():
+            if not await self._collector.connect() or self._collector_transport_lost():
                 raise SerialException(f"Could not open serial port {self.port}")
             _LOGGER.debug("Collector.connect() completed")
 
@@ -168,10 +169,13 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                 self.port
             )
         except Exception as err:
-            self._connected = False
+            await self.async_disconnect_unlocked()
             self._last_error = str(err)
             _LOGGER.error("Failed to connect to OWL device at %s: %s", self.port, err)
             raise UpdateFailed(f"Failed to connect to device: {err}") from err
+
+    def _collector_transport_lost(self) -> bool:
+        return isinstance(self._collector, TimestampedCollector) and self._collector.transport_lost
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Serialize a complete poll against reset, snapshots and reconnect."""
@@ -185,7 +189,15 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
             self._connected,
             self._historical_data_complete,
         )
-        if not self._connected or self._collector is None:
+        if (
+            not self._connected
+            or self._collector is None
+            or self._collector_transport_lost()
+            or (
+                isinstance(self._collector, TimestampedCollector)
+                and self._collector.transport_idle_for(self.SERIAL_IDLE_TIMEOUT)
+            )
+        ):
             _LOGGER.debug("Not connected, attempting to connect.")
             await self._async_connect_unlocked()
             if not self._collector:
@@ -275,6 +287,11 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     )
                     _LOGGER.debug("Got debug info: %s", debug_info)
 
+                if self._collector_transport_lost():
+                    await self.async_disconnect_unlocked()
+                    self._last_error = f"Serial connection lost on {self.port}"
+                    raise UpdateFailed(self._last_error)
+
                 self._last_error = None
                 self._connected = True
 
@@ -304,6 +321,8 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                      "debug_info": debug_info,
                  }
 
+            except UpdateFailed:
+                raise
             except Exception as err:
                 self._error_count += 1
                 self._last_error = str(err)
@@ -325,11 +344,7 @@ class OwlDataUpdateCoordinator(DataUpdateCoordinator):
                     if isinstance(err, SerialException):
                         _LOGGER.info("Serial error detected, attempting to reconnect to device...")
                         self._connected = False
-                        try:
-                            await self._async_connect_unlocked()
-                            _LOGGER.info("Reconnection successful")
-                        except Exception as connect_err:
-                            _LOGGER.warning("Reconnection failed: %s", connect_err, exc_info=True)
+                        await self._async_connect_unlocked()
                 else:
                     # Final attempt failed
                     self._connected = False

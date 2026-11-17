@@ -1,4 +1,19 @@
-# Energy OWL 0.9.5
+# Energy OWL 0.9.6
+
+Energy OWL now recovers automatically after a USB disconnect. It closes the failed
+serial connection and retries the configured port on subsequent polls until the
+adapter returns, so normal recovery needs no Home Assistant reboot. If the driver
+keeps the serial stream open while no packets arrive, Energy OWL reopens it after
+five minutes of silence, including during history collection.
+
+To reopen the port immediately, run `energy_owl.force_reconnect` in Home Assistant
+under **Developer Tools → Actions** and select your CM160 as the device target.
+
+Regression tests simulated a USB disconnect, repeated open failures, and resumed
+live readings after reconnect. Both Home Assistant test suites passed with 148
+tests each. Physical USB testing is pending.
+
+## Energy OWL 0.9.5
 
 Import routine historical minute updates silently and reserve recovery status and
 notifications for substantial backfills of previously missing history.
