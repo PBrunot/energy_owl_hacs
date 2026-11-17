@@ -1,4 +1,11 @@
 {
+  "entity": {
+    "button": {
+      "reconnect": {
+        "default": "mdi:serial-port"
+      }
+    }
+  },
   "services": {
     "get_historical_data": "mdi:database-arrow-down",
     "clear_historical_data": "mdi:database-remove",

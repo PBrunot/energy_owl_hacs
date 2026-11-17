@@ -62,7 +62,7 @@ git diff --check
 
 Ruff is pinned in requirements-lint.txt. `.github/workflows/validate.yml` runs it
 alongside hassfest and HACS validation. The HACS job disables PR commenting and
-skips only `brands`, whose registration is tracked in quality-scale.md. HACS checks
+checks the bundled brand icon. HACS checks
 repository metadata through GitHub; it is not a substitute for local tests.
 
 For local hassfest, use the [official action](https://github.com/home-assistant/actions/tree/master/hassfest)

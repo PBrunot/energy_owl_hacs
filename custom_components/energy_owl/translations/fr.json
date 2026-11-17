@@ -1,0 +1,141 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connecter l’appareil",
+        "data": {
+          "port": "Port série"
+        }
+      },
+      "reconfigure": {
+        "title": "Changer le port de connexion",
+        "description": "Utilisez cette option uniquement pour le même adaptateur CM160. Les identifiants des entités et de l’historique énergétique sont conservés.",
+        "data": {
+          "port": "Port série"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossible de se connecter",
+      "unknown": "Erreur inattendue"
+    },
+    "abort": {
+      "already_configured": "L’appareil est déjà configuré",
+      "reconfigure_successful": "Port de connexion mis à jour."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configurer les options",
+        "data": {
+          "enable_historical_import": "Importer les données historiques",
+          "voltage_entity": "Entité de tension (facultative)",
+          "voltage": "Tension par défaut (V)"
+        },
+        "data_description": {
+          "enable_historical_import": "Importe les données énergétiques historiques du CM160 dans les statistiques de Home Assistant. Désactivez cette option si vous n’avez pas besoin des données passées ou souhaitez réduire la charge de la base de données.",
+          "voltage_entity": "Sélectionnez un capteur qui fournit la tension du secteur, par exemple un compteur intelligent. Laissez ce champ vide pour utiliser la valeur fixe ci-dessous.",
+          "voltage": "Tension du secteur en volts utilisée pour calculer la puissance (W) et l’énergie (kWh) à partir du courant mesuré. Valeurs typiques : 230 V en Europe et 120 V en Amérique du Nord. S’applique si aucune entité de tension n’est sélectionnée."
+        }
+      }
+    }
+  },
+  "entity": {
+    "button": {
+      "reconnect": {
+        "name": "Reconnecter le port série"
+      }
+    },
+    "sensor": {
+      "current": {
+        "name": "Courant"
+      },
+      "power": {
+        "name": "Puissance"
+      },
+      "energy": {
+        "name": "Énergie"
+      },
+      "historical_data_status": {
+        "name": "État des données historiques",
+        "state": {
+          "disconnected": "Déconnecté",
+          "starting": "Démarrage de la synchronisation",
+          "syncing": "Synchronisation en cours",
+          "complete": "Terminée"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "single_target": {
+      "message": "Sélectionnez exactement un appareil Energy OWL."
+    },
+    "invalid_target": {
+      "message": "L’appareil doit appartenir à une configuration Energy OWL."
+    },
+    "entry_not_loaded": {
+      "message": "La configuration Energy OWL n’est pas chargée."
+    },
+    "no_history": {
+      "message": "Aucune donnée historique à exporter."
+    },
+    "export_failed": {
+      "message": "Impossible d’exporter les données historiques : {error}"
+    },
+    "action_failed": {
+      "message": "Échec de l’action sur l’appareil : {error}"
+    }
+  },
+  "services": {
+    "get_historical_data": {
+      "name": "Récupérer les données historiques",
+      "description": "Récupère les données historiques de l’appareil Energy OWL CM160.",
+      "fields": {
+        "device_id": {
+          "name": "Appareil",
+          "description": "Sélectionnez exactement un appareil Energy OWL chargé."
+        },
+        "clear_existing": {
+          "name": "Effacer les données existantes",
+          "description": "Efface les données historiques existantes avant d’en collecter de nouvelles."
+        }
+      }
+    },
+    "clear_historical_data": {
+      "name": "Effacer les données historiques",
+      "description": "Efface les données historiques de l’appareil Energy OWL CM160.",
+      "fields": {
+        "device_id": {
+          "name": "Appareil",
+          "description": "Sélectionnez exactement un appareil Energy OWL chargé."
+        }
+      }
+    },
+    "export_historical_data_csv": {
+      "name": "Exporter les données historiques en CSV",
+      "description": "Exporte les données énergétiques historiques du CM160 dans un fichier CSV du dossier de configuration de Home Assistant.",
+      "fields": {
+        "device_id": {
+          "name": "Appareil",
+          "description": "Sélectionnez exactement un appareil Energy OWL chargé."
+        },
+        "filename": {
+          "name": "Nom du fichier",
+          "description": "Nom du fichier CSV à créer. La valeur par défaut est energy_owl_export_<device_id>.csv."
+        }
+      }
+    },
+    "force_reconnect": {
+      "name": "Forcer la reconnexion",
+      "description": "Rouvre le port série du CM160 lorsque l’appareil ne répond plus.",
+      "fields": {
+        "device_id": {
+          "name": "Appareil",
+          "description": "Sélectionnez exactement un appareil Energy OWL chargé."
+        }
+      }
+    }
+  }
+}

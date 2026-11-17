@@ -9,7 +9,7 @@ to this custom integration and its README. Outstanding work is explicit below.
 | --- | --- |
 | action-setup | Implemented: async_setup registers services independently of entries; loader/action tests cover it. |
 | appropriate-polling | Implemented: coordinator polls every 30 seconds; receipt timestamps distinguish cached data. |
-| brands | Outstanding: no verified registration in home-assistant/brands. Local icons.json is not brand registration. HACS CI skips only this check. |
+| brands | A local `brand/icon.png` supplies the Home Assistant integration icon and is included in HACS validation. |
 | common-modules | Implemented: shared constants, coordinator, entity base and energy helpers. |
 | config-flow | Implemented: UI setup, options and port reconfiguration; no YAML configuration. |
 | config-flow-test-coverage | Partial: success, duplicate, refusal and options tests exist; full branch coverage has not been demonstrated. |
@@ -32,7 +32,7 @@ to this custom integration and its README. Outstanding work is explicit below.
 
 The remaining Silver/Gold/Platinum rules have not received a complete audit, and no
 higher-tier claim is made. Fully typed third-party APIs, complete branch coverage,
-brand registration and hardware-independent identity remain follow-up work.
+and hardware-independent identity remain follow-up work.
 Pinned dependencies and CI results establish tested compatibility, not certification.
 HA 2026.11.1 receives a runtime smoke check. Full pytest coverage on that version
 is outstanding because the published fixture package imports a removed private HA

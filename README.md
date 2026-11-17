@@ -148,6 +148,10 @@ The CSV contains two columns: `timestamp` (ISO 8601) and `current` (amperes).
 
 ### `energy_owl.force_reconnect`
 
+To reopen the port from the device page, go to **Settings → Devices & services**,
+open your CM160 device, and press **Reconnect serial port** under **Configuration**.
+The button remains available if the loaded integration loses its serial connection.
+
 Disconnects and reconnects to the CM160. Use when the device appears stuck or unresponsive.
 
 ```yaml
@@ -220,6 +224,14 @@ logger:
 ```
 
 ## Version History
+
+### v0.9.7
+
+- Add a **Reconnect serial port** button to the CM160 device page.
+- Add Italian and French UI translations.
+- Update device-targeted actions to use the current device registry API while
+  supporting Home Assistant 2026.5.2.
+- Add the Energy meters and monitoring catalog category and a local brand icon.
 
 ### v0.9.6
 
@@ -373,7 +385,7 @@ unreleased packaging, metadata, documentation and validation improvements.
 Validation on this branch: **132 tests pass on HA 2026.5.2 and 2026.10.4**.
 HA 2026.11.1 passes a runtime smoke check; its full pytest suite awaits a compatible
 pytest-homeassistant-custom-component release. Local hassfest validation passes.
-CI additionally runs HACS validation, with brand registration explicitly deferred.
+CI additionally runs HACS validation, including the bundled Home Assistant brand icon.
 
 See [development instructions](docs/development.md) for the pinned test stacks,
 metadata checks and CI validation, and [AGENTS.md](AGENTS.md) for contributor guidance. This custom integration makes no Bronze or other

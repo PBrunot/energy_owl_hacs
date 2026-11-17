@@ -1,0 +1,141 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connetti il dispositivo",
+        "data": {
+          "port": "Porta seriale"
+        }
+      },
+      "reconfigure": {
+        "title": "Cambia porta di connessione",
+        "description": "Usa questa opzione solo per lo stesso adattatore CM160. Gli identificativi delle entità e dello storico energetico vengono conservati.",
+        "data": {
+          "port": "Porta seriale"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossibile connettersi",
+      "unknown": "Errore imprevisto"
+    },
+    "abort": {
+      "already_configured": "Il dispositivo è già configurato",
+      "reconfigure_successful": "Porta di connessione aggiornata."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configura opzioni",
+        "data": {
+          "enable_historical_import": "Importa dati storici",
+          "voltage_entity": "Entità della tensione (facoltativa)",
+          "voltage": "Tensione predefinita (V)"
+        },
+        "data_description": {
+          "enable_historical_import": "Importa i dati energetici storici del CM160 nelle statistiche di Home Assistant. Disattiva questa opzione se non ti servono i dati passati o se vuoi ridurre il carico sul database.",
+          "voltage_entity": "Seleziona un sensore che fornisca la tensione di rete, ad esempio un contatore intelligente. Lascia il campo vuoto per usare il valore fisso qui sotto.",
+          "voltage": "Tensione di rete in volt usata per calcolare la potenza (W) e l’energia (kWh) dalla corrente misurata. Valori tipici: 230 V in Europa e 120 V in Nord America. Si applica se non è stata selezionata un’entità della tensione."
+        }
+      }
+    }
+  },
+  "entity": {
+    "button": {
+      "reconnect": {
+        "name": "Riconnetti la porta seriale"
+      }
+    },
+    "sensor": {
+      "current": {
+        "name": "Corrente"
+      },
+      "power": {
+        "name": "Potenza"
+      },
+      "energy": {
+        "name": "Energia"
+      },
+      "historical_data_status": {
+        "name": "Stato dei dati storici",
+        "state": {
+          "disconnected": "Disconnesso",
+          "starting": "Avvio della sincronizzazione",
+          "syncing": "Sincronizzazione in corso",
+          "complete": "Completata"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "single_target": {
+      "message": "Seleziona esattamente un dispositivo Energy OWL."
+    },
+    "invalid_target": {
+      "message": "Il dispositivo deve appartenere a una configurazione Energy OWL."
+    },
+    "entry_not_loaded": {
+      "message": "La configurazione Energy OWL non è caricata."
+    },
+    "no_history": {
+      "message": "Non ci sono dati storici da esportare."
+    },
+    "export_failed": {
+      "message": "Impossibile esportare i dati storici: {error}"
+    },
+    "action_failed": {
+      "message": "Azione del dispositivo non riuscita: {error}"
+    }
+  },
+  "services": {
+    "get_historical_data": {
+      "name": "Recupera dati storici",
+      "description": "Recupera i dati storici dal dispositivo Energy OWL CM160.",
+      "fields": {
+        "device_id": {
+          "name": "Dispositivo",
+          "description": "Seleziona esattamente un dispositivo Energy OWL caricato."
+        },
+        "clear_existing": {
+          "name": "Cancella dati esistenti",
+          "description": "Cancella i dati storici esistenti prima di raccoglierne di nuovi."
+        }
+      }
+    },
+    "clear_historical_data": {
+      "name": "Cancella dati storici",
+      "description": "Cancella i dati storici del dispositivo Energy OWL CM160.",
+      "fields": {
+        "device_id": {
+          "name": "Dispositivo",
+          "description": "Seleziona esattamente un dispositivo Energy OWL caricato."
+        }
+      }
+    },
+    "export_historical_data_csv": {
+      "name": "Esporta dati storici in CSV",
+      "description": "Esporta i dati energetici storici del CM160 in un file CSV nella cartella di configurazione di Home Assistant.",
+      "fields": {
+        "device_id": {
+          "name": "Dispositivo",
+          "description": "Seleziona esattamente un dispositivo Energy OWL caricato."
+        },
+        "filename": {
+          "name": "Nome del file",
+          "description": "Nome del file CSV da creare. Il valore predefinito è energy_owl_export_<device_id>.csv."
+        }
+      }
+    },
+    "force_reconnect": {
+      "name": "Forza la riconnessione",
+      "description": "Riapre la porta seriale del CM160 quando il dispositivo non risponde.",
+      "fields": {
+        "device_id": {
+          "name": "Dispositivo",
+          "description": "Seleziona esattamente un dispositivo Energy OWL caricato."
+        }
+      }
+    }
+  }
+}

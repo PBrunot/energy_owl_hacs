@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from custom_components.energy_owl.collector import TimestampedCollector
@@ -42,15 +43,24 @@ async def test_real_coordinator_setup_unload(hass, mock_config_entry, import_ena
         assert mock_config_entry.runtime_data.coordinator.connected
         assert (mock_config_entry.runtime_data.importer is not None) == import_enabled
         entities = er.async_entries_for_config_entry(er.async_get(hass), mock_config_entry.entry_id)
-        assert len(entities) == 4
+        assert len(entities) == 5
         current = next(entity for entity in entities if entity.unique_id.endswith("-current"))
         assert hass.states.get(current.entity_id).state == "1.5"
         devices = dr.async_entries_for_config_entry(dr.async_get(hass), mock_config_entry.entry_id)
         assert len(devices) == 1
         assert devices[0].sw_version is None
+        button = next(entity for entity in entities if entity.domain == "button")
+        assert button.device_id == devices[0].id
+        mock_config_entry.runtime_data.coordinator.async_set_update_error(UpdateFailed("USB absent"))
+        assert hass.states.get(current.entity_id).state == "unavailable"
+        assert hass.states.get(button.entity_id).state != "unavailable"
+        await hass.services.async_call(
+            "button", "press", {"entity_id": button.entity_id}, blocking=True
+        )
+        assert serial.connect.await_count == 2
         assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
         await hass.async_block_till_done()
-    serial.disconnect.assert_awaited_once()
+    assert serial.disconnect.await_count == 2
 
 
 async def test_real_setup_connection_refusal(hass, mock_config_entry):

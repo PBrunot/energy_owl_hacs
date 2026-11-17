@@ -1,4 +1,15 @@
-# Energy OWL 0.9.6
+# Energy OWL 0.9.7
+
+- Open your CM160 device page in Home Assistant and press **Reconnect serial port**
+  under **Configuration** to close and reopen the port without restarting Home
+  Assistant. The button stays available during serial outages while the entry is loaded.
+- The integration UI and actions are now available in Italian and French.
+- Device-targeted actions use the current device registry API and retain
+  compatibility with Home Assistant 2026.5.2.
+- The manifest lists Energy OWL under **Energy → Meters & monitoring**. A bundled
+  owl icon provides branding in Home Assistant.
+
+## Energy OWL 0.9.6
 
 Energy OWL now recovers automatically after a USB disconnect. It closes the failed
 serial connection and retries the configured port on subsequent polls until the

@@ -21,7 +21,7 @@ from .statistics import OwlStatisticsImporter
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.BUTTON, Platform.SENSOR]
 
 _LOGGER = logging.getLogger(__name__)
 

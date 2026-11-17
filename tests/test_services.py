@@ -66,6 +66,14 @@ async def test_history_response(hass, mock_config_entry, mock_coordinator):
     mock_coordinator.get_historical_data.assert_awaited_once_with(strict=True)
 
 
+async def test_force_reconnect_targets_loaded_device(hass, mock_config_entry, mock_coordinator, caplog):
+    device_id = await target(hass, mock_config_entry, mock_coordinator)
+    mock_coordinator.async_reconnect = AsyncMock()
+    await hass.services.async_call(DOMAIN, "force_reconnect", {"device_id": device_id}, blocking=True)
+    mock_coordinator.async_reconnect.assert_awaited_once_with()
+    assert "DeviceEntry.config_entries" not in caplog.text
+
+
 async def test_csv_write_error(hass, mock_config_entry, mock_coordinator):
     from homeassistant.util import dt as dt_util
     device_id = await target(hass, mock_config_entry, mock_coordinator)

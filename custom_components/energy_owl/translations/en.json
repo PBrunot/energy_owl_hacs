@@ -42,6 +42,11 @@
     }
   },
   "entity": {
+    "button": {
+      "reconnect": {
+        "name": "Reconnect serial port"
+      }
+    },
     "sensor": {
       "current": {
         "name": "Current"

@@ -29,8 +29,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key="single_target")
         target_device_id = target_device_ids[0]
         device = dr.async_get(hass).async_get(target_device_id)
-        entries = [] if device is None else [
-            entry for entry_id in device.config_entries
+        if device is None:
+            entry_ids = ()
+        elif getattr(device, "is_composite_device", False) or not hasattr(device, "config_entry_id"):
+            # Older HA releases and legacy composite devices can have several owners.
+            entry_ids = device.config_entries
+        else:
+            entry_ids = (device.config_entry_id,)
+        entries = [
+            entry for entry_id in entry_ids
             if (entry := hass.config_entries.async_get_entry(entry_id)) is not None
             and entry.domain == DOMAIN
         ]
